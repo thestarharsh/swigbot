@@ -1,0 +1,42 @@
+{
+  "name": "swigbot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Conversational commerce agent for Swiggy MCP (Food, Instamart, Dineout) — Telegram + CLI surfaces, BYOK LLM",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio",
+    "cli": "tsx scripts/cli-chat.ts",
+    "smoke": "tsx scripts/smoke.ts",
+    "smoke:tools": "tsx scripts/smoke-tools.ts",
+    "webhook:set": "tsx scripts/set-webhook.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "drizzle-orm": "^0.45.2",
+    "next": "^16.2.10",
+    "openai": "^6.45.0",
+    "pg": "^8.22.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@types/pg": "^8.20.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "dotenv": "^17.4.2",
+    "drizzle-kit": "^0.31.10",
+    "tsx": "^4.23.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
