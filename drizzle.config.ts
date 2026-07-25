@@ -5,8 +5,8 @@ export default defineConfig({
   schema: "./lib/db/schema.ts",
   dialect: "postgresql",
   dbCredentials: {
-    url:
-      process.env.DATABASE_URL ??
-      "postgresql://swigbot:swigbot@localhost:5433/swigbot",
+    // DDL goes to the direct endpoint: a transaction pooler mangles session
+    // state, and pg_dump/DDL sessions leak `search_path` onto shared connections.
+    url: process.env.DATABASE_URL_UNPOOLED ?? process.env.DATABASE_URL ?? "",
   },
 });

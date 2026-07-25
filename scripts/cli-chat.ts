@@ -1,5 +1,4 @@
-import { config } from "dotenv";
-config({ path: [".env.local", ".env"] });
+import "./load-env";
 
 import readline from "readline";
 import { ensureUser, runAgentTurn } from "../lib/agent";

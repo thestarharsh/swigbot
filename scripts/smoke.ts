@@ -1,5 +1,4 @@
-import { config } from "dotenv";
-config({ path: [".env.local", ".env"] });
+import "./load-env";
 
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";

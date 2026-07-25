@@ -91,7 +91,7 @@ export class SwiggyMcpSession {
     }
   }
 
-  /** _meta.swiggy.deprecation starts populating in v1.1 (spec Problem 20). */
+  /** _meta.swiggy.deprecation starts populating in v1.1. */
   private checkDeprecation(tool: string, result: unknown): void {
     const meta = (result as { _meta?: { swiggy?: { deprecation?: unknown } } })?._meta;
     const dep = meta?.swiggy?.deprecation;

@@ -19,7 +19,7 @@ function friendlyAuthError(err: unknown): { message: string; steps: string[] } {
     return {
       message: "SwigBot couldn't reach its database, so the login couldn't be saved.",
       steps: [
-        "Start the database: docker compose up -d",
+        "Check DATABASE_URL in .env.local and that the database is reachable",
         "If it's a fresh database, run: pnpm db:push",
         "Ask the bot for a new login link and try again",
       ],

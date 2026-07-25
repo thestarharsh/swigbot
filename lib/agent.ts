@@ -103,7 +103,9 @@ export async function runAgentTurn(user: User, surface: string, text: string): P
 
       const results: ToolResult[] = [];
       for (const call of response.toolCalls) {
-        const outcome = await executeGuardedTool(session, user.id, call.name, call.input);
+        const outcome = await executeGuardedTool(session, user.id, call.name, call.input, {
+          userText: text,
+        });
         let content = outcome.text || "(empty result)";
         if (content.length > TOOL_RESULT_MAX_CHARS) {
           content =

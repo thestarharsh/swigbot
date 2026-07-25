@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { withLlmRetry } from "./backoff";
 import type {
   ChatModel,
   ChatRequest,
@@ -67,19 +68,21 @@ export class AnthropicChatModel implements ChatModel {
       system.push({ type: "text", text: req.system.dynamic });
     }
 
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: req.maxTokens ?? 4096,
-      system,
-      tools: req.tools.map(
-        (t): Anthropic.Tool => ({
-          name: t.name,
-          description: t.description,
-          input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
-        }),
-      ),
-      messages: toAnthropicMessages(req.messages),
-    });
+    const response = await withLlmRetry(() =>
+      this.client.messages.create({
+        model: this.model,
+        max_tokens: req.maxTokens ?? 4096,
+        system,
+        tools: req.tools.map(
+          (t): Anthropic.Tool => ({
+            name: t.name,
+            description: t.description,
+            input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
+          }),
+        ),
+        messages: toAnthropicMessages(req.messages),
+      }),
+    );
 
     let text = "";
     const toolCalls: ToolCall[] = [];

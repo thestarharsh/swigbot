@@ -23,7 +23,8 @@ CLI (pnpm cli) ─────────────┘         │
 
 ## Prerequisites
 
-- Node.js 20+, pnpm, Docker (for Postgres), ngrok (only for Telegram)
+- Node.js 20+, pnpm
+- A Postgres database - a [Neon](https://console.neon.tech) free-tier project is enough
 - A Telegram bot token from [@BotFather](https://core.telegram.org/bots/tutorial) (only for Telegram)
 - An API key for one LLM provider
 
@@ -32,8 +33,6 @@ CLI (pnpm cli) ─────────────┘         │
 ```bash
 pnpm install
 cp .env.example .env.local        # then fill in the values
-
-docker compose up -d              # Postgres 16 on localhost:5433
 pnpm db:push                      # create tables
 ```
 
@@ -42,8 +41,31 @@ Minimal `.env.local` for CLI-only dev:
 ```env
 LLM_PROVIDER=anthropic            # or openai | openrouter | gemini | custom
 ANTHROPIC_API_KEY=sk-ant-...
-DATABASE_URL=postgresql://swigbot:swigbot@localhost:5433/swigbot
+DATABASE_URL=postgresql://user:pass@ep-xxx-pooler.region.aws.neon.tech/neondb?sslmode=require
 NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
+
+### Database
+
+**Neon (recommended)** - data survives laptop reboots and is the same database the deployed app reads. Create a project in the [Neon console](https://console.neon.tech), copy the **direct** connection string (host without `-pooler`), set both `DATABASE_URL` and `DATABASE_URL_UNPOOLED`, then `pnpm db:push`. TLS is enabled automatically for any non-localhost host.
+
+Use the direct endpoint, not the pooled one. Neon's pooler shares server connections between clients, so session state leaks: piping a `pg_dump` through it (dumps emit `set_config('search_path','')`) leaves `search_path` empty for every later client, and unqualified queries then fail with `relation "users" does not exist`. It also rejects `options=-c search_path=public`, and Drizzle refuses to schema-qualify against `public`, so there is no client-side defence. A direct connection has none of these problems, and this workload opens very few connections.
+
+`pnpm db:reset --yes` truncates every table for a clean demo run. It deletes linked Swiggy tokens too, so users re-do phone + OTP afterwards.
+
+Verify the provider before chatting - `pnpm probe` runs a plain completion plus a two-round tool loop against the configured model, and fails loudly if the model can't call tools:
+
+```bash
+pnpm probe
+```
+
+Free OpenRouter pools return 429 often. Set `LLM_MODEL_FALLBACKS` to a comma-separated list and OpenRouter fails over automatically (it accepts two fallbacks beyond the primary; extras are dropped):
+
+```env
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-...
+LLM_MODEL=poolside/laguna-s-2.1:free
+LLM_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free
 ```
 
 ## Run - CLI (fastest loop, no ngrok)
@@ -62,13 +84,63 @@ pnpm dev                          # terminal 1
 ngrok http 3000                   # terminal 2 → copy the https URL
 ```
 
-Set in `.env.local`: `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET` (any random string), and `NEXT_PUBLIC_APP_URL=https://<your-ngrok>.ngrok.io` - the OAuth redirect URI is derived from it, and the app re-runs DCR automatically when it changes. Restart `pnpm dev`, then:
+Set in `.env.local`: `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET` (any random string), and `NEXT_PUBLIC_APP_URL=https://<your-ngrok>.ngrok.io`. Restart `pnpm dev`, then:
 
 ```bash
 pnpm webhook:set                  # registers the webhook with Telegram
 ```
 
 Message your bot. `/logout` unlinks the Swiggy account.
+
+**Keep the OAuth redirect on localhost.** Swiggy allowlists redirect URIs by exact match and accepts only HTTPS or `http://localhost`, so a tunnel hostname is refused at `/authorize` with "isn't whitelisted yet". The two URLs are configured separately - Telegram posts to the tunnel, the browser lands on localhost:
+
+```env
+NEXT_PUBLIC_APP_URL=https://<your-ngrok>.ngrok-free.app   # webhook target
+SWIGGY_REDIRECT_BASE_URL=http://localhost:3000            # OAuth redirect_uri
+```
+
+Consequence: open the login link on the machine running the app (Telegram Desktop or web, not a phone) - `localhost` resolves only there. The app re-runs DCR automatically when the redirect URI changes. A production redirect URI has to be registered with Swiggy via builders@swiggy.in.
+
+## Deploy to Vercel
+
+Vercel replaces ngrok as the webhook host. It cannot yet host the OAuth redirect: Swiggy's `/auth` page rejects any hostname that is not an allowlisted client, and `*.vercel.app` renders "Oops, Vercel isn't whitelisted yet". Request allowlisting for your production URL via an issue on [Swiggy/swiggy-mcp-server-manifest](https://github.com/Swiggy/swiggy-mcp-server-manifest).
+
+Until then the two roles split, which is why the database has to be hosted rather than local - both processes share it:
+
+| Role | URL | Runs on |
+|---|---|---|
+| Telegram webhook | `https://<app>.vercel.app/api/webhook` | Vercel |
+| OAuth redirect | `http://localhost:3000/api/auth/callback/swiggy` | your machine, during login only |
+
+```bash
+pnpm dlx vercel            # link and deploy
+pnpm dlx vercel --prod
+```
+
+Set these in Vercel's project settings (Environment Variables), then redeploy:
+
+```env
+DATABASE_URL=<Neon DIRECT connection string>
+TELEGRAM_BOT_TOKEN=...
+WEBHOOK_SECRET=...
+LLM_PROVIDER=...
+OPENROUTER_API_KEY=...          # or whichever provider key
+NEXT_PUBLIC_APP_URL=https://<app>.vercel.app
+SWIGGY_REDIRECT_BASE_URL=http://localhost:3000
+```
+
+Point Telegram at the deployment (locally, with `NEXT_PUBLIC_APP_URL` set to the Vercel URL):
+
+```bash
+pnpm webhook:set
+```
+
+Serverless notes:
+
+- **Update dedupe is in Postgres**, not memory - instances share nothing, and Telegram redelivers on a slow ack.
+- **`maxDuration = 60`** on the webhook route. A turn makes several LLM and MCP calls; slow free-tier models can exceed the limit on your plan, and the reply is then lost.
+- **The MCP session cache is per instance**, so cold starts reconnect to all three servers (roughly a second).
+- **`DB_POOL_MAX` defaults to 1 on Vercel**, so many instances don't exhaust Neon's connection limit on the direct endpoint.
 
 ## Tests
 
@@ -87,8 +159,9 @@ pnpm typecheck
 | `lib/prompt.ts` | SwigBot system prompt (cache-stable core + per-user runtime context) |
 | `lib/llm/` | Provider-agnostic chat: native Anthropic adapter + OpenAI-compat adapter (covers OpenAI/OpenRouter/Gemini/custom) |
 | `lib/mcp/session.ts` | MCP client per user token: 3 servers, tool discovery, deprecation watch |
-| `lib/mcp/guardrails.ts` | Code-level enforcement: ₹1000 cap, ₹99 min, no blind retry of placement (check-then-retry), 10s track cooldown, coupon scrubbing/filtering, tool-call log |
+| `lib/mcp/guardrails.ts` | Code-level enforcement: confirmation gate on irreversible calls, required-arg validation, ₹1000 cap, ₹99 min, no blind retry of placement (check-then-retry), 10s track cooldown, coupon scrubbing/filtering, tool-call log |
 | `lib/mcp/retry.ts` | Backoff 500ms→8s, ≤5 attempts, 30s wall-clock budget |
+| `lib/llm/backoff.ts` | Retries transient provider failures (429/5xx, honours `Retry-After`) so a saturated free tier doesn't kill a turn |
 | `lib/swiggy-auth.ts` | DCR + per-user PKCE + token storage/logout |
 | `app/api/webhook` | Telegram webhook (instant ack, async processing, secret check, dedupe) |
 | `app/api/auth/callback/swiggy` | OAuth redirect handler (+ Telegram notification) |

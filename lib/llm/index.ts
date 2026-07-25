@@ -59,5 +59,11 @@ export function getChatModel(): ChatModel {
   if (provider === "custom" && !baseURL) {
     throw new Error(`Set LLM_BASE_URL for provider "custom"`);
   }
-  return new OpenAiCompatChatModel(provider, model, apiKey, baseURL);
+
+  const fallbacks = (process.env.LLM_MODEL_FALLBACKS ?? "")
+    .split(",")
+    .map((m) => m.trim())
+    .filter((m) => m && m !== model);
+
+  return new OpenAiCompatChatModel(provider, model, apiKey, baseURL, fallbacks);
 }

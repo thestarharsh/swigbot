@@ -5,6 +5,7 @@ import {
   timestamp,
   jsonb,
   integer,
+  bigint,
   boolean,
   uniqueIndex,
   index,
@@ -74,6 +75,15 @@ export const messages = pgTable(
   },
   (t) => [index("messages_user_created").on(t.userId, t.createdAt)],
 );
+
+/**
+ * Telegram update IDs already handled. Telegram redelivers on a slow ack, and
+ * serverless instances share no memory, so dedupe has to live in the database.
+ */
+export const processedUpdates = pgTable("processed_updates", {
+  updateId: bigint("update_id", { mode: "number" }).primaryKey(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
 
 /** One row per tool call, per the ship-to-production observability guidance. */
 export const toolCallLog = pgTable(

@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { withLlmRetry } from "./backoff";
 import type {
   ChatModel,
   ChatRequest,
@@ -15,6 +16,9 @@ const STOP_MAP: Record<string, StopReason> = {
 };
 
 type OAMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
+
+/** OpenRouter's limit on the `models` fallback array, primary included. */
+const MAX_ROUTED_MODELS = 3;
 
 function toOpenAiMessages(req: ChatRequest): OAMessage[] {
   const out: OAMessage[] = [
@@ -41,7 +45,7 @@ function toOpenAiMessages(req: ChatRequest): OAMessage[] {
         });
         break;
       case "tool_results":
-        // OpenAI-compat requires one `tool` message per result.
+        // One `tool` message per result, unlike Anthropic's single user turn.
         for (const r of m.results) {
           out.push({
             role: "tool",
@@ -63,15 +67,17 @@ export class OpenAiCompatChatModel implements ChatModel {
     readonly model: string,
     apiKey: string,
     baseURL?: string,
+    /** OpenRouter only: models it may route to when the primary is unavailable. */
+    private readonly fallbacks: string[] = [],
   ) {
     this.client = new OpenAI({ apiKey, baseURL });
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    // OpenAI's current models reject max_tokens in favor of
-    // max_completion_tokens; other OpenAI-compatible hosts still expect max_tokens.
+    // Current OpenAI models reject max_tokens; other compatible hosts still
+    // require it.
     const maxTokens = req.maxTokens ?? 4096;
-    const completion = await this.client.chat.completions.create({
+    const body = {
       model: this.model,
       ...(this.provider === "openai"
         ? { max_completion_tokens: maxTokens }
@@ -89,7 +95,14 @@ export class OpenAiCompatChatModel implements ChatModel {
             })),
           }
         : {}),
-    });
+      // Non-standard field OpenRouter reads to fail over between models.
+      // It rejects more than three entries, so extra fallbacks are dropped.
+      ...(this.provider === "openrouter" && this.fallbacks.length
+        ? { models: [this.model, ...this.fallbacks].slice(0, MAX_ROUTED_MODELS) }
+        : {}),
+    };
+
+    const completion = await withLlmRetry(() => this.client.chat.completions.create(body));
 
     const choice = completion.choices[0];
     if (!choice) throw new Error("LLM returned no choices");

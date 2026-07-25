@@ -4,20 +4,20 @@ import { isRetryableError } from "./errors";
 import type { SwiggyMcpSession, ToolCallOutcome } from "./session";
 
 /**
- * Enforces the spec's hard guardrails in code so they hold even if the model
- * slips. Swiggy publishes no response schemas, so numeric checks use tolerant
- * key matching and only hard-block on confident violations.
+ * Hard guardrails enforced in code, so they hold when the model ignores the
+ * prompt. Swiggy publishes no response schemas, so numeric checks match keys
+ * tolerantly and only block on a confident violation.
  */
 
-const FOOD_CART_CAP_RUPEES = 1000; // Builders Club v1 hard cap
+const FOOD_CART_CAP_RUPEES = 1000;
 const INSTAMART_MIN_RUPEES = 99;
 const TRACK_COOLDOWN_MS = 10_000;
 const PLACEMENT_CHECK_DELAY_MS = 2_500;
 
-/** Never blind-retried (spec Problem 4). */
-const NON_IDEMPOTENT = new Set(["place_food_order", "checkout", "book_table"]);
+/** Spends money or reserves a table: never retried blindly, never unconfirmed. */
+const IRREVERSIBLE = new Set(["place_food_order", "checkout", "book_table"]);
 
-/** Status tool consulted when a placement call fails ambiguously. */
+/** Consulted when an irreversible call fails ambiguously. */
 const PLACEMENT_CHECK_TOOL: Record<string, string> = {
   place_food_order: "get_food_orders",
   checkout: "get_orders",
@@ -28,21 +28,26 @@ const TRACK_TOOLS = new Set(["track_food_order", "track_order"]);
 
 const lastTrackAt = new Map<string, number>();
 
+/** What the user actually said this turn, for the confirmation gate. */
+export interface TurnContext {
+  userText: string;
+}
+
 export async function executeGuardedTool(
   session: SwiggyMcpSession,
   userId: number,
   name: string,
   args: Record<string, unknown>,
+  turn?: TurnContext,
 ): Promise<ToolCallOutcome> {
   const started = Date.now();
   let outcome: ToolCallOutcome;
-  let errorMessage: string | null = null;
 
   try {
-    outcome = await runGuarded(session, userId, name, args);
+    outcome = await runGuarded(session, userId, name, args, turn);
   } catch (err) {
-    errorMessage = err instanceof Error ? err.message : String(err);
-    await log(session, userId, name, "error", Date.now() - started, errorMessage);
+    const message = err instanceof Error ? err.message : String(err);
+    await log(session, userId, name, "error", Date.now() - started, message);
     throw err;
   }
 
@@ -57,39 +62,66 @@ export async function executeGuardedTool(
   return outcome;
 }
 
+function blocked(text: string): ToolCallOutcome {
+  return { text, isError: true, raw: null };
+}
+
 async function runGuarded(
   session: SwiggyMcpSession,
   userId: number,
   name: string,
   args: Record<string, unknown>,
+  turn: TurnContext | undefined,
 ): Promise<ToolCallOutcome> {
-  // Spec Problem 15: tracking at most once per 10s.
+  const tool = session.tools.find((t) => t.name === name);
+  if (!tool) {
+    return blocked(
+      `No tool named "${name}" exists. ${suggestTools(name, session)} ` +
+        `Use only tools from the provided list, with their exact names.`,
+    );
+  }
+
+  const missing = missingRequiredArgs(tool.inputSchema, args);
+  if (missing.length) {
+    return blocked(
+      `Call rejected before it was sent: "${name}" requires ${missing.join(", ")}, ` +
+        `which ${missing.length > 1 ? "were" : "was"} not provided. Fetch the missing value ` +
+        `with the appropriate tool (addresses via get_addresses, Dineout locations via ` +
+        `get_saved_locations) and call again. Never invent an ID.`,
+    );
+  }
+
   if (TRACK_TOOLS.has(name)) {
     const key = `${userId}:${name}`;
-    const last = lastTrackAt.get(key) ?? 0;
-    const since = Date.now() - last;
+    const since = Date.now() - (lastTrackAt.get(key) ?? 0);
     if (since < TRACK_COOLDOWN_MS) {
-      return {
-        text: `Tracking was checked ${Math.round(since / 1000)}s ago. Delivery ETAs update every ~10s - tell the user the last known status and to ask again in a minute. Do not call this tool again yet.`,
-        isError: true,
-        raw: null,
-      };
+      return blocked(
+        `Tracking was checked ${Math.round(since / 1000)}s ago. ETAs update every ~10s - ` +
+          `give the user the last known status and suggest asking again in a minute. ` +
+          `Do not call this tool again yet.`,
+      );
     }
     lastTrackAt.set(key, Date.now());
   }
 
-  // Spec Problems 1/6/18: fresh server-side cart check before any placement.
+  if (IRREVERSIBLE.has(name) && !isConfirmation(turn?.userText)) {
+    return blocked(
+      `BLOCKED - the user has not confirmed. "${name}" spends real money and may only run ` +
+        `immediately after the user explicitly agrees. Show the final summary (items, total, ` +
+        `address, Cash on Delivery) and ask them to reply "Yes" to confirm. ` +
+        `Do not call this tool again until they do.`,
+    );
+  }
+
   if (name === "place_food_order" || name === "checkout") {
-    const violation = await placementPrecheck(session, name);
-    if (violation) return { text: violation, isError: true, raw: null };
+    const violation = await placementPrecheck(session, name, args);
+    if (violation) return blocked(violation);
   }
 
-  if (!NON_IDEMPOTENT.has(name)) {
-    const result = await withRetry(() => session.callTool(name, args));
-    return postProcess(name, result);
+  if (!IRREVERSIBLE.has(name)) {
+    return postProcess(name, await withRetry(() => session.callTool(name, args)));
   }
 
-  // One attempt only; on ambiguous failure, check order status and report.
   try {
     return postProcess(name, await session.callTool(name, args));
   } catch (err) {
@@ -98,31 +130,94 @@ async function runGuarded(
     await sleep(PLACEMENT_CHECK_DELAY_MS);
     let checkText = "(status check also failed)";
     try {
-      const check = await session.callTool(checkTool, {});
-      checkText = check.text;
+      checkText = (await session.callTool(checkTool, cartArgs(checkTool, args))).text;
     } catch {
-      /* keep placeholder */
+      // Keep the placeholder; the model is told the check itself failed.
     }
-    return {
-      text:
-        `${name} hit a server error and MAY OR MAY NOT have gone through - it must not be blindly retried. ` +
-        `Here is the current result of ${checkTool}:\n\n${checkText}\n\n` +
-        `If the order/booking appears above, treat the placement as SUCCESSFUL and confirm it to the user. ` +
-        `If it does not appear, you may retry ${name} exactly once.`,
-      isError: true,
-      raw: null,
-    };
+    return blocked(
+      `${name} hit a server error and MAY OR MAY NOT have gone through - it must not be ` +
+        `blindly retried. Current result of ${checkTool}:\n\n${checkText}\n\n` +
+        `If the order/booking appears above, treat the placement as SUCCESSFUL and confirm it ` +
+        `to the user. If it does not appear, you may retry ${name} exactly once.`,
+    );
   }
 }
 
-/** Returns an error string when the placement must be blocked, else null. */
+/**
+ * Address arguments a guardrail's own read needs, taken from the call it is
+ * guarding. Only keys the target tool actually requires are forwarded.
+ */
+function cartArgs(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+  const addressId = args.addressId ?? args.selectedAddressId;
+  const needsAddress = new Set(["get_food_cart", "get_food_orders", "place_food_order"]);
+  return needsAddress.has(tool) && addressId ? { addressId } : {};
+}
+
+const AFFIRMATIVE_WORD =
+  /^(y|ya|yes|yep|yeah|yup|ok|okay|sure|confirm|confirmed|proceed|done|go|haan|ha|han|theek|thik|bilkul)\b/i;
+
+const AFFIRMATIVE_PHRASE =
+  /\b(place (the |my )?order|go ahead|do it|book it|confirm(ing)? (it|the order)|order (it|kar do)|place kar do|kar do)\b/i;
+
+/**
+ * True when the user's own words authorise the action. Emoji-only replies count
+ * because the Telegram prompt offers "Reply Yes ✅". A missing turn context is
+ * treated as unconfirmed, so non-conversational callers can never place orders.
+ */
+export function isConfirmation(userText: string | undefined): boolean {
+  if (!userText) return false;
+  const text = userText.trim();
+  if (!text) return false;
+  if (/^[✅👍🆗👌]+$/u.test(text)) return true;
+
+  const words = text.replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
+  if (!words) return false;
+  if (AFFIRMATIVE_PHRASE.test(words)) return true;
+  // A leading "yes" only counts in a short reply: "yes" confirms, a long
+  // sentence starting with "ok" is usually just conversation.
+  return AFFIRMATIVE_WORD.test(words) && words.length <= 40;
+}
+
+/** Required properties absent from args, per the schema discovered from MCP. */
+export function missingRequiredArgs(
+  inputSchema: Record<string, unknown>,
+  args: Record<string, unknown>,
+): string[] {
+  const required = inputSchema?.required;
+  if (!Array.isArray(required)) return [];
+  return required.filter(
+    (key): key is string =>
+      typeof key === "string" && (args[key] === undefined || args[key] === null || args[key] === ""),
+  );
+}
+
+function suggestTools(name: string, session: SwiggyMcpSession): string {
+  const needle = name.toLowerCase().replace(/[^a-z]/g, "");
+  const close = session.tools
+    .filter((t) => {
+      const hay = t.name.toLowerCase().replace(/[^a-z]/g, "");
+      return hay.includes(needle) || needle.includes(hay);
+    })
+    .slice(0, 3)
+    .map((t) => t.name);
+  return close.length ? `Did you mean: ${close.join(", ")}?` : "";
+}
+
+/**
+ * Error string when the placement must be blocked, else null. The cart tools
+ * take addressId, so it is forwarded from the placement call: without it Swiggy
+ * rejects the read and the cap silently stops being enforced.
+ */
 async function placementPrecheck(
   session: SwiggyMcpSession,
   placementTool: string,
+  args: Record<string, unknown>,
 ): Promise<string | null> {
   const cartTool = placementTool === "place_food_order" ? "get_food_cart" : "get_cart";
   try {
-    const cart = await withRetry(() => session.callTool(cartTool, {}), { maxAttempts: 2 });
+    const cart = await withRetry(() => session.callTool(cartTool, cartArgs(cartTool, args)), {
+      maxAttempts: 2,
+    });
     if (cart.isError) return null;
     const total = extractCartTotal(tryParseJson(cart.text));
     if (total == null) return null;
@@ -135,17 +230,14 @@ async function placementPrecheck(
     }
     return null;
   } catch {
-    // Best-effort: a failed pre-check must never block ordering.
+    // A failed pre-check must never block ordering.
     return null;
   }
 }
 
-// ── Response post-processing ─────────────────────────────────────────────
-
 function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
   if (outcome.isError) return outcome;
 
-  // Spec Problem 7: coupon_discount=0 means suggested, not applied.
   if (name === "get_food_cart" || name === "update_food_cart" || name === "apply_food_coupon") {
     const parsed = tryParseJson(outcome.text);
     if (parsed && scrubPhantomCoupon(parsed)) {
@@ -153,7 +245,6 @@ function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
     }
   }
 
-  // Spec Problem 5: v1 is COD-only, so drop online-payment coupons.
   if (name === "fetch_food_coupons") {
     const parsed = tryParseJson(outcome.text);
     if (parsed) {
@@ -182,9 +273,10 @@ export function tryParseJson(text: string): unknown | null {
   }
 }
 
-const TOTAL_KEY = /^(grand_?total|bill_?total|cart_?total|total_?(amount|payable|price|to_?pay|value)|total|payable_?amount|amount_?payable|to_?pay)$/i;
+const TOTAL_KEY =
+  /^(grand_?total|bill_?total|cart_?total|total_?(amount|payable|price|to_?pay|value)|total|payable_?amount|amount_?payable|to_?pay)$/i;
 
-/** Max number found under a total-ish key; payable total dominates subtotals. */
+/** Largest number under a total-ish key; the payable total dominates subtotals. */
 export function extractCartTotal(value: unknown): number | null {
   const found: number[] = [];
   const walk = (node: unknown): void => {
@@ -204,7 +296,7 @@ export function extractCartTotal(value: unknown): number | null {
   return found.length ? Math.max(...found) : null;
 }
 
-/** Strips coupon_applied when coupon_discount is 0. Returns true if changed. */
+/** Drops coupon_applied when coupon_discount is 0. Returns true if changed. */
 export function scrubPhantomCoupon(value: unknown): boolean {
   let changed = false;
   const walk = (node: unknown): void => {
@@ -213,7 +305,8 @@ export function scrubPhantomCoupon(value: unknown): boolean {
     } else if (node && typeof node === "object") {
       const obj = node as Record<string, unknown>;
       const discount = obj.coupon_discount ?? obj.couponDiscount;
-      const applied = "coupon_applied" in obj ? "coupon_applied" : "couponApplied" in obj ? "couponApplied" : null;
+      const applied =
+        "coupon_applied" in obj ? "coupon_applied" : "couponApplied" in obj ? "couponApplied" : null;
       if (applied && (discount === 0 || discount === "0" || discount == null)) {
         delete obj[applied];
         obj._coupon_note = "No coupon is actually applied (coupon_discount was 0).";

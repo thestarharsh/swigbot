@@ -4,8 +4,15 @@ import { db, schema } from "./db";
 
 const BASE = () => process.env.SWIGGY_MCP_BASE_URL ?? "https://mcp.swiggy.com";
 
+/**
+ * Swiggy allowlists redirect URIs by exact match and only permits HTTPS or
+ * `http://localhost` (see docs/swiggy/start/authenticate.md). Tunnel hostnames
+ * are rejected at /authorize, so the OAuth base is configured separately from
+ * the public app URL: Telegram posts to the tunnel, the browser lands on
+ * localhost.
+ */
 export const redirectUri = () =>
-  `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/api/auth/callback/swiggy`;
+  `${process.env.SWIGGY_REDIRECT_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/auth/callback/swiggy`;
 
 /** Max age of a pending PKCE session (user typing phone + OTP in browser). */
 const AUTH_SESSION_TTL_MS = 15 * 60 * 1000;
