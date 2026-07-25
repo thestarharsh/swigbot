@@ -21,7 +21,7 @@ const PRESETS: Record<string, ProviderPreset> = {
   gemini: {
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     keyEnv: "GEMINI_API_KEY",
-    defaultModel: "gemini-2.5-pro",
+    defaultModel: "gemini-flash-latest",
   },
   custom: { keyEnv: "LLM_API_KEY", defaultModel: "" },
 };

@@ -17,6 +17,7 @@
     "cli": "tsx scripts/cli-chat.ts",
     "probe": "tsx scripts/probe-llm.ts",
     "schemas": "tsx scripts/dump-schemas.ts",
+    "tail": "tsx scripts/tail-log.ts",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:tools": "tsx scripts/smoke-tools.ts",
     "webhook:set": "tsx scripts/set-webhook.ts"

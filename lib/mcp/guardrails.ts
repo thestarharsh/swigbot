@@ -245,20 +245,11 @@ function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
     }
   }
 
-  if (name === "fetch_food_coupons") {
-    const parsed = tryParseJson(outcome.text);
-    if (parsed) {
-      const removed = filterOnlineOnlyCoupons(parsed);
-      if (removed > 0) {
-        return {
-          ...outcome,
-          text:
-            JSON.stringify(parsed) +
-            `\n\n(Note: ${removed} coupon(s) requiring online payment were removed - orders are Cash on Delivery only.)`,
-        };
-      }
-    }
-  }
+  // Online-payment coupons used to be stripped here, on the spec's promise that
+  // v1 was Cash on Delivery only. Live orders now refuse COD ("cash option is
+  // temporarily unavailable") and settle over UPI, so filtering them removed the
+  // only coupons that could actually apply. filterOnlineOnlyCoupons is kept for
+  // the day a COD-only surface comes back.
 
   return outcome;
 }

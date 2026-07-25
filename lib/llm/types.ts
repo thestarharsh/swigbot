@@ -14,6 +14,7 @@ export interface ToolCall {
   id: string;
   name: string;
   input: Record<string, unknown>;
+  providerExtra?: Record<string, unknown>;
 }
 
 export interface ToolResult {

@@ -59,7 +59,7 @@ Verify the provider before chatting - `pnpm probe` runs a plain completion plus 
 pnpm probe
 ```
 
-Free OpenRouter pools return 429 often. Set `LLM_MODEL_FALLBACKS` to a comma-separated list and OpenRouter fails over automatically (it accepts two fallbacks beyond the primary; extras are dropped):
+Free tiers run out. `LLM_MODEL_FALLBACKS` takes a comma-separated list of models to fall back to when the primary is rate limited (429) or gone (404). OpenRouter does this server-side via its `models` field, so failover costs no extra request but accepts only two fallbacks beyond the primary; every other provider falls through the list client-side.
 
 ```env
 LLM_PROVIDER=openrouter
@@ -67,6 +67,21 @@ OPENROUTER_API_KEY=sk-or-v1-...
 LLM_MODEL=poolside/laguna-s-2.1:free
 LLM_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free
 ```
+
+Free-tier quotas worth knowing, measured rather than guessed:
+
+| Provider | Limit | Notes |
+|---|---|---|
+| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day |
+| Gemini free tier | 20 requests/day per **model** | Per-model, so a fallback chain multiplies the budget |
+
+A turn costs 3-12 requests, so a 50/day account is roughly 6 turns. Budget accordingly before a live demo.
+
+Two Gemini-specific quirks the adapter handles, both of which look like bugs elsewhere:
+
+- **Thought signatures.** Gemini 3 returns an opaque `thought_signature` with each function call and rejects the next turn if it is not echoed back. It rides along in `ToolCall.providerExtra`, is persisted with history, and is replayed verbatim.
+- **Thinking eats the output budget.** A low `max_tokens` returns an empty message with `finish_reason=length`, because reasoning is billed against the same budget. The default is 8192; override with `LLM_MAX_TOKENS`.
+- Pinned `gemini-2.5-*` model IDs are refused for keys created after their retirement; prefer the `gemini-flash-latest` style aliases.
 
 ## Run - CLI (fastest loop, no ngrok)
 

@@ -39,6 +39,7 @@ function toOpenAiMessages(req: ChatRequest): OAMessage[] {
                   id: tc.id,
                   type: "function" as const,
                   function: { name: tc.name, arguments: JSON.stringify(tc.input) },
+                  ...(tc.providerExtra ?? {}),
                 })),
               }
             : {}),
@@ -67,18 +68,44 @@ export class OpenAiCompatChatModel implements ChatModel {
     readonly model: string,
     apiKey: string,
     baseURL?: string,
-    /** OpenRouter only: models it may route to when the primary is unavailable. */
+    /** Models to try when the primary is rate limited or unavailable. */
     private readonly fallbacks: string[] = [],
   ) {
     this.client = new OpenAI({ apiKey, baseURL });
   }
 
+  /**
+   * One call, with the failures that arrive as a successful HTTP response
+   * turned into real errors. OpenRouter reports upstream problems as an
+   * error-shaped body with status 200, which the SDK does not throw on, so a
+   * retryable rate limit would otherwise surface as a TypeError on `choices`.
+   */
+  private async createChecked(
+    body: Record<string, unknown>,
+  ): Promise<OpenAI.Chat.Completions.ChatCompletion> {
+    const res = await this.client.chat.completions.create(
+      body as unknown as Parameters<typeof this.client.chat.completions.create>[0],
+    );
+    const embedded = (res as unknown as { error?: { message?: string; code?: number } }).error;
+    if (embedded) {
+      throw Object.assign(new Error(embedded.message ?? "LLM provider error"), {
+        status: embedded.code,
+      });
+    }
+    const completion = res as OpenAI.Chat.Completions.ChatCompletion;
+    if (!completion.choices?.length) {
+      throw new Error(`LLM returned no choices: ${JSON.stringify(res).slice(0, 300)}`);
+    }
+    return completion;
+  }
+
   async chat(req: ChatRequest): Promise<ChatResponse> {
     // Current OpenAI models reject max_tokens; other compatible hosts still
-    // require it.
-    const maxTokens = req.maxTokens ?? 4096;
+    // require it. Thinking models spend this budget before emitting any text,
+    // so a tight cap returns an empty message with finish_reason=length.
+    const maxTokens = req.maxTokens ?? Number(process.env.LLM_MAX_TOKENS ?? 8192);
     const body = {
-      model: this.model,
+      model: "",
       ...(this.provider === "openai"
         ? { max_completion_tokens: maxTokens }
         : { max_tokens: maxTokens }),
@@ -102,10 +129,34 @@ export class OpenAiCompatChatModel implements ChatModel {
         : {}),
     };
 
-    const completion = await withLlmRetry(() => this.client.chat.completions.create(body));
+    // OpenRouter fails over server-side via the `models` field. Every other
+    // provider needs it done here, which matters on Gemini's free tier where
+    // the quota is per model, so a sibling model still has budget.
+    const candidates =
+      this.provider === "openrouter" ? [this.model] : [this.model, ...this.fallbacks];
+
+    let lastError: unknown;
+    let completion: OpenAI.Chat.Completions.ChatCompletion | undefined;
+
+    for (const [index, model] of candidates.entries()) {
+      const isLast = index === candidates.length - 1;
+      try {
+        completion = await withLlmRetry(
+          () => this.createChecked({ ...body, model }),
+          { retryRateLimit: isLast },
+        );
+        if (index > 0) console.warn(`[llm] served by fallback model ${model}`);
+        break;
+      } catch (err) {
+        lastError = err;
+        const status = (err as { status?: number }).status;
+        if (isLast || (status !== 429 && status !== 404)) throw err;
+        console.warn(`[llm] ${model} unavailable (${status}), trying ${candidates[index + 1]}`);
+      }
+    }
+    if (!completion) throw lastError;
 
     const choice = completion.choices[0];
-    if (!choice) throw new Error("LLM returned no choices");
 
     const toolCalls: ToolCall[] = [];
     for (const tc of choice.message.tool_calls ?? []) {
@@ -116,7 +167,13 @@ export class OpenAiCompatChatModel implements ChatModel {
       } catch {
         input = { _raw: tc.function.arguments };
       }
-      toolCalls.push({ id: tc.id, name: tc.function.name, input });
+      const extra = (tc as unknown as { extra_content?: unknown }).extra_content;
+      toolCalls.push({
+        id: tc.id,
+        name: tc.function.name,
+        input,
+        ...(extra ? { providerExtra: { extra_content: extra } } : {}),
+      });
     }
 
     return {

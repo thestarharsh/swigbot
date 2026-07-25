@@ -160,8 +160,10 @@ describe("Problem 7 - coupon auto-suggest confusion", () => {
   });
 });
 
-describe("Problem 5 - COD-only coupon filtering", () => {
-  it("removes online-payment-only coupons from fetch_food_coupons results", async () => {
+describe("coupons are no longer filtered by payment method", () => {
+  it("keeps online-payment coupons, because live orders settle over UPI", async () => {
+    // COD is refused in practice, so stripping these removed the only coupons
+    // that could apply.
     const session = fakeSession({
       fetch_food_coupons: () =>
         ok({
@@ -173,8 +175,7 @@ describe("Problem 5 - COD-only coupon filtering", () => {
     });
     const result = await executeGuardedTool(session, nextUserId++, "fetch_food_coupons", {});
     expect(result.text).toContain("CODSAVE");
-    expect(result.text).not.toContain("UPIONLY");
-    expect(result.text).toContain("Cash on Delivery");
+    expect(result.text).toContain("UPIONLY");
   });
 
   it("filterOnlineOnlyCoupons handles snake_case flags", () => {

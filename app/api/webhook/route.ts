@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { after } from "next/server";
-import { lt } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
 import { db, schema } from "@/lib/db";
 import { ensureUser, runAgentTurn } from "@/lib/agent";
 import { logout } from "@/lib/swiggy-auth";
@@ -25,14 +25,32 @@ interface TelegramUpdate {
  * Records an update ID and reports whether this instance won the race. The
  * insert is the lock, so a redelivery cannot be processed twice even across
  * concurrent serverless instances.
+ *
+ * Fails open: the response was already acked, so Telegram will not redeliver,
+ * and losing a reply because the dedupe bookkeeping could not be written is
+ * worse than the duplicate it guards against.
  */
 async function claimUpdate(updateId: number): Promise<boolean> {
-  const inserted = await db
-    .insert(schema.processedUpdates)
-    .values({ updateId })
-    .onConflictDoNothing()
-    .returning({ updateId: schema.processedUpdates.updateId });
-  return inserted.length > 0;
+  try {
+    const inserted = await db
+      .insert(schema.processedUpdates)
+      .values({ updateId })
+      .onConflictDoNothing()
+      .returning({ updateId: schema.processedUpdates.updateId });
+    return inserted.length > 0;
+  } catch (err) {
+    console.warn(`[webhook] dedupe write failed, processing anyway: ${
+      err instanceof Error ? err.message : err
+    }`);
+    return true;
+  }
+}
+
+async function releaseUpdate(updateId: number): Promise<void> {
+  await db
+    .delete(schema.processedUpdates)
+    .where(eq(schema.processedUpdates.updateId, updateId))
+    .catch(() => {});
 }
 
 export async function POST(req: NextRequest) {
@@ -77,7 +95,10 @@ export async function POST(req: NextRequest) {
         .delete(schema.processedUpdates)
         .where(lt(schema.processedUpdates.createdAt, new Date(Date.now() - UPDATE_RETENTION_MS)));
     } catch (err) {
-      console.error("[webhook] failed:", err);
+      console.error(`[webhook] failed on update ${update.update_id}:`, err);
+      // The claim marks this update as handled, so leaving it behind after a
+      // failure would permanently block a resend of the same update.
+      await releaseUpdate(update.update_id);
       await sendMessage(chatId, "Sorry - something went wrong. Please try again.").catch(() => {});
     }
   });
