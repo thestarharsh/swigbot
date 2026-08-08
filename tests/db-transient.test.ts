@@ -3,8 +3,8 @@ import { isTransientDbError } from "../lib/db";
 
 describe("isTransientDbError", () => {
   it("recognises the failures a suspended Neon compute produces", () => {
-    // Exactly what killed a live turn: pool handed out a client whose socket
-    // had been closed while the compute was suspended.
+    // What killed a live turn: a pooled client whose socket had been closed
+    // while the compute was suspended.
     const outer = new Error(
       'Failed query: insert into "processed_updates" ("update_id") values ($1)',
     );

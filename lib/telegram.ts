@@ -11,12 +11,10 @@ async function call(method: string, payload: Record<string, unknown>): Promise<R
 }
 
 /**
- * Messages go out as plain text. Telegram's legacy Markdown treats `_` and `*`
- * as emphasis delimiters and strips them from the delivered text, which
- * silently corrupts OAuth login URLs (`response_type` arrived as
- * `responsetype`). Emphasis markers are removed here so they don't surface as
- * literal punctuation; underscores are left untouched. Telegram still
- * auto-links bare URLs without a parse mode.
+ * Telegram's legacy Markdown reads `_` as emphasis and strips it from the
+ * delivered text, which corrupted every OAuth login URL (`response_type`
+ * arrived as `responsetype`). So messages go out as plain text with emphasis
+ * markers removed and underscores untouched; bare URLs still auto-link.
  */
 export function toPlainText(text: string): string {
   return text

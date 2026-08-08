@@ -106,9 +106,8 @@ export async function runAgentTurn(user: User, surface: string, text: string): P
 
       const results: ToolResult[] = [];
       for (const call of response.toolCalls) {
-        // A model that repeats an identical failing call burns an LLM request
-        // per iteration and ends the turn at the iteration cap with nothing
-        // to show for it.
+        // Repeating a failing call burns one request per iteration and ends
+        // the turn at the cap with nothing to show.
         const signature = `${call.name}:${JSON.stringify(call.input)}`;
         const seen = (repeats.get(signature) ?? 0) + 1;
         repeats.set(signature, seen);

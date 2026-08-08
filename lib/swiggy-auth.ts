@@ -5,11 +5,9 @@ import { db, schema } from "./db";
 const BASE = () => process.env.SWIGGY_MCP_BASE_URL ?? "https://mcp.swiggy.com";
 
 /**
- * Swiggy allowlists redirect URIs by exact match and only permits HTTPS or
- * `http://localhost` (see docs/swiggy/start/authenticate.md). Tunnel hostnames
- * are rejected at /authorize, so the OAuth base is configured separately from
- * the public app URL: Telegram posts to the tunnel, the browser lands on
- * localhost.
+ * Kept separate from the public app URL: Swiggy allowlists redirect URIs by
+ * exact match and permits only HTTPS or `http://localhost`, so tunnel and
+ * hosting hostnames are rejected at /authorize.
  */
 export const redirectUri = () =>
   `${process.env.SWIGGY_REDIRECT_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/auth/callback/swiggy`;

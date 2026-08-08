@@ -3,10 +3,7 @@ import "./load-env";
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
 
-/**
- * Wipes every row while keeping the schema, for a clean demo run. Destructive:
- * linked Swiggy tokens go too, so every user re-does phone + OTP afterwards.
- */
+/** Wipes every row, keeping the schema. Linked tokens go too: users re-do OTP. */
 const TABLES = [
   "messages",
   "tool_call_log",

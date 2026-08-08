@@ -6,7 +6,7 @@ import { ensureUser, runAgentTurn } from "@/lib/agent";
 import { logout } from "@/lib/swiggy-auth";
 import { sendMessage, sendTyping } from "@/lib/telegram";
 
-/** A turn runs several LLM and MCP calls; the platform cap still applies. */
+/** A turn runs several LLM and MCP calls. */
 export const maxDuration = 60;
 
 const UPDATE_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -22,13 +22,9 @@ interface TelegramUpdate {
 }
 
 /**
- * Records an update ID and reports whether this instance won the race. The
- * insert is the lock, so a redelivery cannot be processed twice even across
- * concurrent serverless instances.
- *
- * Fails open: the response was already acked, so Telegram will not redeliver,
- * and losing a reply because the dedupe bookkeeping could not be written is
- * worse than the duplicate it guards against.
+ * The insert is the lock, so a redelivery cannot be processed twice across
+ * instances. Fails open: the ack already went out, so a lost reply would cost
+ * more than the duplicate this guards against.
  */
 async function claimUpdate(updateId: number): Promise<boolean> {
   try {
@@ -71,7 +67,7 @@ export async function POST(req: NextRequest) {
   const text = msg.text.trim();
   const from = msg.from;
 
-  // Telegram retries updates that aren't acked quickly, so ack now and work after.
+  // Telegram retries updates that aren't acked quickly: ack now, work after.
   after(async () => {
     try {
       if (!(await claimUpdate(update.update_id))) return;
@@ -96,8 +92,7 @@ export async function POST(req: NextRequest) {
         .where(lt(schema.processedUpdates.createdAt, new Date(Date.now() - UPDATE_RETENTION_MS)));
     } catch (err) {
       console.error(`[webhook] failed on update ${update.update_id}:`, err);
-      // The claim marks this update as handled, so leaving it behind after a
-      // failure would permanently block a resend of the same update.
+      // Left behind, the claim would permanently block a resend of this update.
       await releaseUpdate(update.update_id);
       await sendMessage(chatId, "Sorry - something went wrong. Please try again.").catch(() => {});
     }

@@ -22,7 +22,7 @@ const TOOLS = [
   },
 ];
 
-/** --quick skips the plain completion: 2 requests instead of 3, for tight quotas. */
+/** --quick skips the plain completion: 2 requests instead of 3. */
 const QUICK = process.argv.includes("--quick");
 
 async function main() {
@@ -89,7 +89,7 @@ const SYSTEM = {
   dynamic: "",
 };
 
-/** Two requests: does it call a tool, and does it chain off the result. */
+/** Does it call a tool, and does it chain off the result. */
 async function quick(model: ReturnType<typeof getChatModel>) {
   const t0 = Date.now();
   const r1 = await model.chat({

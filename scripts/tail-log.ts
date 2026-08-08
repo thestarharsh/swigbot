@@ -3,14 +3,11 @@ import "./load-env";
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
 
-/**
- * Recent conversation and tool activity, for diagnosing a turn after the fact.
- * `pnpm tail [n] [--full]` - --full prints whole tool results instead of a head.
- */
 const LIMIT = Number(process.argv.find((a) => /^\d+$/.test(a)) ?? 12);
 const FULL = process.argv.includes("--full");
 const CLIP = FULL ? 100_000 : 300;
 
+/** Recent conversation and tool activity. `pnpm tail [n] [--full]`. */
 async function main() {
   const tools = (
     await db.execute(sql`

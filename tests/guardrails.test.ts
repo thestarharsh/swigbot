@@ -30,7 +30,7 @@ function fakeSession(
   } as unknown as SwiggyMcpSession;
 }
 
-/** Placement guardrails assume the user just said yes; the gate has its own tests. */
+/** Placement tests assume a yes; the gate has its own tests below. */
 const CONFIRMED = { userText: "yes" };
 
 const ok = (data: unknown): ToolCallOutcome => ({
@@ -162,8 +162,8 @@ describe("Problem 7 - coupon auto-suggest confusion", () => {
 
 describe("coupons are no longer filtered by payment method", () => {
   it("keeps online-payment coupons, because live orders settle over UPI", async () => {
-    // COD is refused in practice, so stripping these removed the only coupons
-    // that could apply.
+    // COD is refused in practice, so stripping these removed the only
+    // coupons that could apply.
     const session = fakeSession({
       fetch_food_coupons: () =>
         ok({

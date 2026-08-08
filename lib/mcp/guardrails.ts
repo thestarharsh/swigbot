@@ -28,7 +28,7 @@ const TRACK_TOOLS = new Set(["track_food_order", "track_order"]);
 
 const lastTrackAt = new Map<string, number>();
 
-/** What the user actually said this turn, for the confirmation gate. */
+/** What the user said this turn, for the confirmation gate. */
 export interface TurnContext {
   userText: string;
 }
@@ -108,7 +108,7 @@ async function runGuarded(
     return blocked(
       `BLOCKED - the user has not confirmed. "${name}" spends real money and may only run ` +
         `immediately after the user explicitly agrees. Show the final summary (items, total, ` +
-        `address, Cash on Delivery) and ask them to reply "Yes" to confirm. ` +
+        `address, payment method) and ask them to reply "Yes" to confirm. ` +
         `Do not call this tool again until they do.`,
     );
   }
@@ -143,10 +143,7 @@ async function runGuarded(
   }
 }
 
-/**
- * Address arguments a guardrail's own read needs, taken from the call it is
- * guarding. Only keys the target tool actually requires are forwarded.
- */
+/** Forwards only the address args the guarded read itself requires. */
 function cartArgs(tool: string, args: Record<string, unknown>): Record<string, unknown> {
   const addressId = args.addressId ?? args.selectedAddressId;
   const needsAddress = new Set(["get_food_cart", "get_food_orders", "place_food_order"]);
@@ -160,9 +157,9 @@ const AFFIRMATIVE_PHRASE =
   /\b(place (the |my )?order|go ahead|do it|book it|confirm(ing)? (it|the order)|order (it|kar do)|place kar do|kar do)\b/i;
 
 /**
- * True when the user's own words authorise the action. Emoji-only replies count
- * because the Telegram prompt offers "Reply Yes ✅". A missing turn context is
- * treated as unconfirmed, so non-conversational callers can never place orders.
+ * True when the user's own words authorise the action. Emoji count, since the
+ * prompt offers "Reply Yes ✅". No turn context means unconfirmed, so a
+ * non-conversational caller can never place an order.
  */
 export function isConfirmation(userText: string | undefined): boolean {
   if (!userText) return false;
@@ -173,8 +170,8 @@ export function isConfirmation(userText: string | undefined): boolean {
   const words = text.replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
   if (!words) return false;
   if (AFFIRMATIVE_PHRASE.test(words)) return true;
-  // A leading "yes" only counts in a short reply: "yes" confirms, a long
-  // sentence starting with "ok" is usually just conversation.
+  // A leading "yes" counts only in a short reply; a long sentence opening
+  // with "ok" is just conversation.
   return AFFIRMATIVE_WORD.test(words) && words.length <= 40;
 }
 
@@ -204,9 +201,9 @@ function suggestTools(name: string, session: SwiggyMcpSession): string {
 }
 
 /**
- * Error string when the placement must be blocked, else null. The cart tools
- * take addressId, so it is forwarded from the placement call: without it Swiggy
- * rejects the read and the cap silently stops being enforced.
+ * Error string when the placement must be blocked, else null. Without the
+ * forwarded addressId Swiggy rejects the cart read and the cap silently
+ * stops being enforced.
  */
 async function placementPrecheck(
   session: SwiggyMcpSession,
@@ -245,11 +242,10 @@ function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
     }
   }
 
-  // Online-payment coupons used to be stripped here, on the spec's promise that
-  // v1 was Cash on Delivery only. Live orders now refuse COD ("cash option is
-  // temporarily unavailable") and settle over UPI, so filtering them removed the
-  // only coupons that could actually apply. filterOnlineOnlyCoupons is kept for
-  // the day a COD-only surface comes back.
+  // Online-payment coupons were stripped here while the spec promised COD-only.
+  // Live orders now refuse COD and settle over UPI, so that filter removed the
+  // only coupons that could apply. filterOnlineOnlyCoupons is kept for the day
+  // a COD-only surface returns.
 
   return outcome;
 }

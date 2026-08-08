@@ -75,10 +75,9 @@ export class OpenAiCompatChatModel implements ChatModel {
   }
 
   /**
-   * One call, with the failures that arrive as a successful HTTP response
-   * turned into real errors. OpenRouter reports upstream problems as an
-   * error-shaped body with status 200, which the SDK does not throw on, so a
-   * retryable rate limit would otherwise surface as a TypeError on `choices`.
+   * One call, with error-shaped 200 responses turned into real errors.
+   * OpenRouter reports upstream failures that way and the SDK does not throw,
+   * so a retryable rate limit would surface as a TypeError on `choices`.
    */
   private async createChecked(
     body: Record<string, unknown>,
@@ -100,9 +99,9 @@ export class OpenAiCompatChatModel implements ChatModel {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    // Current OpenAI models reject max_tokens; other compatible hosts still
-    // require it. Thinking models spend this budget before emitting any text,
-    // so a tight cap returns an empty message with finish_reason=length.
+    // Current OpenAI models reject max_tokens; other hosts require it.
+    // Thinking models spend this budget before emitting text, so a tight cap
+    // returns an empty message with finish_reason=length.
     const maxTokens = req.maxTokens ?? Number(process.env.LLM_MAX_TOKENS ?? 8192);
     const body = {
       model: "",
@@ -122,16 +121,14 @@ export class OpenAiCompatChatModel implements ChatModel {
             })),
           }
         : {}),
-      // Non-standard field OpenRouter reads to fail over between models.
-      // It rejects more than three entries, so extra fallbacks are dropped.
+      // Non-standard field OpenRouter reads to fail over. Max three entries.
       ...(this.provider === "openrouter" && this.fallbacks.length
         ? { models: [this.model, ...this.fallbacks].slice(0, MAX_ROUTED_MODELS) }
         : {}),
     };
 
-    // OpenRouter fails over server-side via the `models` field. Every other
-    // provider needs it done here, which matters on Gemini's free tier where
-    // the quota is per model, so a sibling model still has budget.
+    // OpenRouter fails over server-side; everyone else needs it done here.
+    // Gemini's free quota is per model, so a sibling model still has budget.
     const candidates =
       this.provider === "openrouter" ? [this.model] : [this.model, ...this.fallbacks];
 

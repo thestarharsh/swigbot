@@ -4,18 +4,13 @@ import * as schema from "./schema";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
-  // A localhost fallback here hid a real bug: scripts that loaded dotenv too
-  // late connected to a database that did not exist instead of failing.
+  // No localhost fallback: it silently masked scripts that loaded dotenv late.
   throw new Error("DATABASE_URL is not set - copy .env.example to .env.local and fill it in");
 }
 
 const isLocal = /@(localhost|127\.0\.0\.1|\[::1\])[:/]/.test(connectionString);
 
-/**
- * One pool per process, parked on globalThis so it survives dev hot reloads and
- * warm serverless invocations. Serverless defaults to a single connection: a
- * hosted Postgres caps connections and every instance opens its own pool.
- */
+/** One pool per process, kept across dev hot reloads and warm invocations. */
 const globalForDb = globalThis as unknown as { swigbotPool?: Pool };
 
 function createPool(): Pool {
@@ -23,16 +18,14 @@ function createPool(): Pool {
     connectionString,
     ssl: isLocal ? undefined : { rejectUnauthorized: true },
     max: Number(process.env.DB_POOL_MAX ?? (process.env.VERCEL ? 1 : 10)),
-    // Below Neon's own idle cutoff, so the pool discards connections before the
-    // server can kill them underneath us.
+    // Idle below Neon's own cutoff, so it discards connections before the
+    // server kills them; the long connect budget covers a compute cold start.
     idleTimeoutMillis: 8_000,
     keepAlive: true,
-    // A suspended Neon compute has to cold start before it can accept us.
     connectionTimeoutMillis: 20_000,
   });
 
-  // Without this listener, an idle client dying (Neon suspending the compute)
-  // emits an unhandled 'error' on the pool and takes the process down.
+  // An idle client dying emits 'error' on the pool; unhandled, it kills the process.
   pool.on("error", (err) => {
     console.warn(`[db] idle client error, pool will replace it: ${err.message}`);
   });
@@ -43,7 +36,7 @@ function createPool(): Pool {
 const TRANSIENT =
   /Connection terminated|connection timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|socket hang up|server closed the connection|Client has encountered a connection error|terminating connection/i;
 
-/** A dead socket, not a bad statement. Exported for tests. */
+/** A dead socket, not a bad statement. */
 export function isTransientDbError(err: unknown): boolean {
   return err instanceof Error && TRANSIENT.test(`${err.message} ${String(err.cause ?? "")}`);
 }
@@ -51,15 +44,9 @@ export function isTransientDbError(err: unknown): boolean {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * Retries queries that fail because the connection died rather than because the
- * statement was bad. A suspended compute otherwise turns one message into a
- * user-visible failure. Retrying a write can duplicate it if the statement
- * committed before the socket dropped; the only writes here are upserts and
- * append-only logs, where a duplicate row is far cheaper than a lost turn.
- *
- * Drizzle issues queries via `pool.query`, so this covers every statement.
- * Transactions would take a raw client from `pool.connect()` and bypass it;
- * this codebase uses none.
+ * Retries queries whose connection died, so a suspended compute costs a retry
+ * rather than the whole turn. Every write here is an upsert or an append-only
+ * log, so a duplicate is the cheaper failure. Transactions would bypass this.
  */
 function withQueryRetry(pool: Pool): Pool {
   const original = pool.query.bind(pool);

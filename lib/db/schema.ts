@@ -76,10 +76,7 @@ export const messages = pgTable(
   (t) => [index("messages_user_created").on(t.userId, t.createdAt)],
 );
 
-/**
- * Telegram update IDs already handled. Telegram redelivers on a slow ack, and
- * serverless instances share no memory, so dedupe has to live in the database.
- */
+/** Handled update IDs. Serverless instances share no memory, so dedupe lives here. */
 export const processedUpdates = pgTable("processed_updates", {
   updateId: bigint("update_id", { mode: "number" }).primaryKey(),
   createdAt: timestamp("created_at").defaultNow().notNull(),

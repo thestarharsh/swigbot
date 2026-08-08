@@ -32,11 +32,7 @@ function isTransient(err: unknown): boolean {
   return err instanceof Error;
 }
 
-/**
- * Retries transient provider failures around a single chat call. Free-tier
- * OpenRouter pools return 429 often enough that one unretried call would kill
- * a whole turn mid-conversation.
- */
+/** Retries transient provider failures; free pools 429 often enough to matter. */
 export async function withLlmRetry<T>(
   fn: () => Promise<T>,
   { retryRateLimit = true }: { retryRateLimit?: boolean } = {},
@@ -48,8 +44,7 @@ export async function withLlmRetry<T>(
       return await fn();
     } catch (err) {
       attempt++;
-      // With another model still to try, waiting out a rate limit is wasted
-      // time: the caller can fall through to a model with its own quota.
+      // With a model left to try, waiting out a rate limit is wasted time.
       if (!retryRateLimit && statusOf(err) === 429) throw err;
       if (attempt >= MAX_ATTEMPTS || !isTransient(err)) throw err;
       const base = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
