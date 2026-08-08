@@ -20,7 +20,7 @@ type OAMessage = OpenAI.Chat.Completions.ChatCompletionMessageParam;
 /** OpenRouter's limit on the `models` fallback array, primary included. */
 const MAX_ROUTED_MODELS = 3;
 
-function toOpenAiMessages(req: ChatRequest): OAMessage[] {
+export function toOpenAiMessages(req: ChatRequest): OAMessage[] {
   const out: OAMessage[] = [
     { role: "system", content: [req.system.stable, req.system.dynamic].filter(Boolean).join("\n\n") },
   ];

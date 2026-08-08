@@ -28,7 +28,6 @@ const EXPECTED: Record<string, string[]> = {
     "tool",
     "status",
     "duration_ms",
-    "session_id",
     "error_message",
     "created_at",
   ],

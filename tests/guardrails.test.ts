@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   executeGuardedTool,
   extractCartTotal,
-  filterOnlineOnlyCoupons,
   isConfirmation,
   missingRequiredArgs,
   scrubPhantomCoupon,
@@ -178,12 +177,6 @@ describe("coupons are no longer filtered by payment method", () => {
     expect(result.text).toContain("UPIONLY");
   });
 
-  it("filterOnlineOnlyCoupons handles snake_case flags", () => {
-    const data = { coupons: [{ code: "A", requires_online_payment: true }, { code: "B" }] };
-    expect(filterOnlineOnlyCoupons(data)).toBe(1);
-    expect(data.coupons).toHaveLength(1);
-    expect(data.coupons[0].code).toBe("B");
-  });
 });
 
 describe("tolerant extractors", () => {
@@ -254,6 +247,81 @@ describe("confirmation gate on irreversible tools", () => {
 
   it("does not read a long sentence that merely starts with ok as consent", () => {
     expect(isConfirmation("ok so what other restaurants are open near me right now")).toBe(false);
+  });
+});
+
+describe("one successful placement per turn", () => {
+  /** What lib/agent.ts builds once per turn and reuses across iterations. */
+  const turn = () => ({ userText: "yes", completed: new Set<string>() });
+
+  it("refuses a second placement after the first succeeded, even with different args", async () => {
+    // The agent's repeat-breaker only compares arguments, so it lets an
+    // identical call through twice and a tweaked one through indefinitely.
+    const place = vi.fn().mockResolvedValue(ok({ orderId: "ord_1", status: "PLACED" }));
+    const session = fakeSession({
+      get_food_cart: () => ok({ cart: { bill_total: 400 } }),
+      place_food_order: place,
+    });
+    const userId = nextUserId++;
+    const ctx = turn();
+
+    const first = await executeGuardedTool(session, userId, "place_food_order", {}, ctx);
+    expect(first.isError).toBe(false);
+
+    const second = await executeGuardedTool(
+      session,
+      userId,
+      "place_food_order",
+      { addressId: "addr_1" },
+      ctx,
+    );
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain("already completed");
+    expect(place).toHaveBeenCalledTimes(1);
+  });
+
+  it("still allows the single retry a domain error leaves open", async () => {
+    // A domain failure means nothing was placed; latching it would strand the
+    // user after a fixable problem.
+    const place = vi
+      .fn()
+      .mockResolvedValueOnce({ text: "item out of stock", isError: true, raw: null })
+      .mockResolvedValueOnce(ok({ orderId: "ord_2" }));
+    const session = fakeSession({
+      get_food_cart: () => ok({ cart: { bill_total: 400 } }),
+      place_food_order: place,
+    });
+    const userId = nextUserId++;
+    const ctx = turn();
+
+    expect((await executeGuardedTool(session, userId, "place_food_order", {}, ctx)).isError).toBe(
+      true,
+    );
+    const retry = await executeGuardedTool(session, userId, "place_food_order", {}, ctx);
+    expect(retry.isError).toBe(false);
+    expect(retry.text).toContain("ord_2");
+  });
+
+  it("latches per turn, so a later turn can order again", async () => {
+    const session = fakeSession({
+      get_food_cart: () => ok({ cart: { bill_total: 400 } }),
+      place_food_order: () => ok({ orderId: "ord_3" }),
+    });
+    const userId = nextUserId++;
+    expect((await executeGuardedTool(session, userId, "place_food_order", {}, turn())).isError).toBe(
+      false,
+    );
+    const nextTurn = await executeGuardedTool(session, userId, "place_food_order", {}, turn());
+    expect(nextTurn.isError).toBe(false);
+  });
+
+  it("does not latch reads", async () => {
+    const session = fakeSession({ get_addresses: () => ok({ addresses: [] }) });
+    const userId = nextUserId++;
+    const ctx = turn();
+    await executeGuardedTool(session, userId, "get_addresses", {}, ctx);
+    const again = await executeGuardedTool(session, userId, "get_addresses", {}, ctx);
+    expect(again.isError).toBe(false);
   });
 });
 

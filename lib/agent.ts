@@ -84,6 +84,9 @@ export async function runAgentTurn(user: User, surface: string, text: string): P
   const messages = await loadHistory(user.id);
 
   const repeats = new Map<string, number>();
+  // Survives the whole turn: the repeat-breaker only catches identical
+  // arguments, so it cannot stop a second order placed with a tweaked payload.
+  const completed = new Set<string>();
   const userMessage: ChatMessage = { role: "user", content: text };
   messages.push(userMessage);
   await persist(user.id, userMessage);
@@ -125,6 +128,7 @@ export async function runAgentTurn(user: User, surface: string, text: string): P
 
         const outcome = await executeGuardedTool(session, user.id, call.name, call.input, {
           userText: text,
+          completed,
         });
         let content = outcome.text || "(empty result)";
         if (content.length > TOOL_RESULT_MAX_CHARS) {

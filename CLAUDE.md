@@ -13,11 +13,12 @@ Conversational commerce agent on Swiggy MCP (Food `/food`, Instamart `/im`, Dine
 
 - Never blind-retry `place_food_order` / `checkout` / `book_table` - `guardrails.ts` does check-then-retry.
 - `place_food_order` / `checkout` / `book_table` are rejected unless the user's own latest message is a confirmation (`isConfirmation`). A caller with no turn context can never place an order.
+- An irreversible tool that has already **succeeded** this turn is latched off (`TurnContext.completed`) - the agent's repeat-breaker only compares arguments, so it cannot stop a duplicate order placed with a tweaked payload. Latch on success only: a domain error means nothing was placed, and an ambiguous 5xx is still owed its one documented retry.
 - A guardrail's own read must forward the args that read requires (`get_food_cart` and `get_food_orders` take `addressId`). Calling them bare makes the cart cap silently unenforceable. Check `pnpm schemas` for required args.
 - Food cart hard cap ₹1000; Instamart minimum ₹99 (Builders Club v1).
 - `coupon_discount = 0` + `coupon_applied` ⇒ coupon is NOT applied - scrubbed before the LLM sees it.
-- COD is the only payment method in v1; online-payment coupons are filtered out.
-- `track_*` tools: ≥10s between calls per user.
+- Payment method is **not** fixed. The spec promised COD-only, but live orders refuse cash ("cash option is temporarily unavailable") and settle over UPI, so coupons are never filtered by payment method - that filter removed the only coupons that could apply. Offer whatever the tools actually return.
+- `track_*` tools: ≥10s between calls per user, enforced against `tool_call_log` (memory is per-instance; serverless shares none).
 - Food/Instamart tools take `addressId`; Dineout takes lat/lng - never cross.
 - No cancellation tool exists; the bot gives 080-67466729.
 - Cart state is server-side: fetch fresh at every turn boundary, never trust conversation memory.

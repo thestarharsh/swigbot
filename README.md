@@ -160,9 +160,10 @@ Serverless notes:
 ## Tests
 
 ```bash
-pnpm test         # guardrail behaviors: cap/minimum blocks, check-then-retry,
-                  # track cooldown, phantom-coupon scrub, COD coupon filter,
-                  # error classification, backoff policy
+pnpm test         # guardrail behaviors: cap/minimum blocks, confirmation gate,
+                  # duplicate-placement latch, check-then-retry, track cooldown,
+                  # phantom-coupon scrub, required-arg validation, provider
+                  # message mapping, error classification, backoff policy
 pnpm typecheck
 ```
 
@@ -174,7 +175,7 @@ pnpm typecheck
 | `lib/prompt.ts` | SwigBot system prompt (cache-stable core + per-user runtime context) |
 | `lib/llm/` | Provider-agnostic chat: native Anthropic adapter + OpenAI-compat adapter (covers OpenAI/OpenRouter/Gemini/custom) |
 | `lib/mcp/session.ts` | MCP client per user token: 3 servers, tool discovery, deprecation watch |
-| `lib/mcp/guardrails.ts` | Code-level enforcement: confirmation gate on irreversible calls, required-arg validation, ₹1000 cap, ₹99 min, no blind retry of placement (check-then-retry), 10s track cooldown, coupon scrubbing/filtering, tool-call log |
+| `lib/mcp/guardrails.ts` | Code-level enforcement: confirmation gate on irreversible calls, one-success-per-turn latch on placement, required-arg validation, ₹1000 cap, ₹99 min, no blind retry of placement (check-then-retry), 10s track cooldown, phantom-coupon scrubbing, tool-call log |
 | `lib/mcp/retry.ts` | Backoff 500ms→8s, ≤5 attempts, 30s wall-clock budget |
 | `lib/llm/backoff.ts` | Retries transient provider failures (429/5xx, honours `Retry-After`) so a saturated free tier doesn't kill a turn |
 | `lib/swiggy-auth.ts` | DCR + per-user PKCE + token storage/logout |
@@ -188,5 +189,6 @@ pnpm typecheck
 - **Numeric guardrails are best-effort**: Swiggy's docs don't publish full response schemas, so cart totals are found by tolerant key matching (`bill_total`, `grandTotal`, `total_to_pay`, …). A confident violation hard-blocks placement; anything ambiguous falls through to the prompt-level rules, which the model follows from real response values.
 - **Order placement is never blind-retried.** On an ambiguous 5xx the wrapper waits, calls `get_food_orders`/`get_orders`/`get_booking_status`, and hands the model both facts with explicit instructions (per the ship-to-production doc).
 - **Telegram is webhook-only** with plain `fetch` - no `node-telegram-bot-api` (that library is long-polling-oriented).
-- **Rate limits**: none enforced by Swiggy MCP in v1.0; the bot still keeps `track_*` ≥10s apart and caches MCP sessions/addresses per turn.
+- **Orders can only succeed once per turn.** The confirmation gate opens on a "yes", but a "yes" stays true for the whole turn, so a model that calls `place_food_order` twice would be authorised twice. A successful placement latches the tool off for the rest of the turn; a failed one does not, so the documented single retry still works.
+- **Rate limits**: none enforced by Swiggy MCP in v1.0; the bot still keeps `track_*` ≥10s apart - read from `tool_call_log`, not process memory, so the gap holds across serverless instances - and caches MCP sessions/addresses per turn.
 - **Cancellations** have no tool by design - the bot gives Swiggy care: **080-67466729**.

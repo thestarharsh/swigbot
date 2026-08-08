@@ -94,7 +94,6 @@ export const toolCallLog = pgTable(
     tool: text("tool").notNull(),
     status: text("status").notNull(),
     durationMs: integer("duration_ms"),
-    sessionId: text("session_id"),
     errorMessage: text("error_message"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },

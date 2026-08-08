@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { db, schema } from "../db";
 import { withRetry, sleep } from "./retry";
 import { isRetryableError } from "./errors";
@@ -31,6 +32,12 @@ const lastTrackAt = new Map<string, number>();
 /** What the user said this turn, for the confirmation gate. */
 export interface TurnContext {
   userText: string;
+  /**
+   * Irreversible tools that have already succeeded this turn. A latch, not a
+   * counter: the repeat-breaker in the agent only compares arguments, so
+   * without this a second `place_food_order` spends money again.
+   */
+  completed?: Set<string>;
 }
 
 export async function executeGuardedTool(
@@ -92,25 +99,33 @@ async function runGuarded(
   }
 
   if (TRACK_TOOLS.has(name)) {
-    const key = `${userId}:${name}`;
-    const since = Date.now() - (lastTrackAt.get(key) ?? 0);
-    if (since < TRACK_COOLDOWN_MS) {
+    const since = await msSinceLastTrack(userId, name);
+    if (since != null && since < TRACK_COOLDOWN_MS) {
       return blocked(
         `Tracking was checked ${Math.round(since / 1000)}s ago. ETAs update every ~10s - ` +
           `give the user the last known status and suggest asking again in a minute. ` +
           `Do not call this tool again yet.`,
       );
     }
-    lastTrackAt.set(key, Date.now());
+    lastTrackAt.set(`${userId}:${name}`, Date.now());
   }
 
-  if (IRREVERSIBLE.has(name) && !isConfirmation(turn?.userText)) {
-    return blocked(
-      `BLOCKED - the user has not confirmed. "${name}" spends real money and may only run ` +
-        `immediately after the user explicitly agrees. Show the final summary (items, total, ` +
-        `address, payment method) and ask them to reply "Yes" to confirm. ` +
-        `Do not call this tool again until they do.`,
-    );
+  if (IRREVERSIBLE.has(name)) {
+    if (turn?.completed?.has(name)) {
+      return blocked(
+        `BLOCKED - "${name}" already completed successfully in this turn. Calling it again ` +
+          `would place a second, duplicate order. Read the earlier result: it holds the ` +
+          `order id and status. Report that to the user instead of calling this tool again.`,
+      );
+    }
+    if (!isConfirmation(turn?.userText)) {
+      return blocked(
+        `BLOCKED - the user has not confirmed. "${name}" spends real money and may only run ` +
+          `immediately after the user explicitly agrees. Show the final summary (items, total, ` +
+          `address, payment method) and ask them to reply "Yes" to confirm. ` +
+          `Do not call this tool again until they do.`,
+      );
+    }
   }
 
   if (name === "place_food_order" || name === "checkout") {
@@ -123,7 +138,12 @@ async function runGuarded(
   }
 
   try {
-    return postProcess(name, await session.callTool(name, args));
+    const outcome = postProcess(name, await session.callTool(name, args));
+    // Latched on success only. A domain error means the order did not go
+    // through, and the ambiguous failure below is still owed the single retry
+    // the ship-to-production contract allows.
+    if (!outcome.isError) turn?.completed?.add(name);
+    return outcome;
   } catch (err) {
     if (!isRetryableError(err)) throw err;
     const checkTool = PLACEMENT_CHECK_TOOL[name];
@@ -140,6 +160,39 @@ async function runGuarded(
         `If the order/booking appears above, treat the placement as SUCCESSFUL and confirm it ` +
         `to the user. If it does not appear, you may retry ${name} exactly once.`,
     );
+  }
+}
+
+/**
+ * Age of this user's last successful track call, or null if there is none.
+ * Memory is per-instance and serverless instances share none, so the tool-call
+ * log is the cross-instance source of truth - the same reason update dedupe
+ * lives in Postgres. The elapsed time is computed server-side: `created_at` is
+ * `timestamp without time zone`, so parsing it client-side would read a UTC
+ * value in the process's own zone. An unreachable database falls back to
+ * memory rather than blocking a legitimate check.
+ */
+async function msSinceLastTrack(userId: number, tool: string): Promise<number | null> {
+  const remembered = lastTrackAt.get(`${userId}:${tool}`);
+  const local = remembered == null ? null : Date.now() - remembered;
+  // Already inside the cooldown on this instance: nothing older can change that.
+  if (local != null && local < TRACK_COOLDOWN_MS) return local;
+
+  try {
+    const { rows } = await db.execute(sql`
+      select extract(epoch from (now() - ${schema.toolCallLog.createdAt})) * 1000 as ms
+      from ${schema.toolCallLog}
+      where ${schema.toolCallLog.userId} = ${userId}
+        and ${schema.toolCallLog.tool} = ${tool}
+        and ${schema.toolCallLog.status} = 'ok'
+      order by ${schema.toolCallLog.id} desc
+      limit 1
+    `);
+    const ms = Number((rows[0] as { ms?: unknown } | undefined)?.ms);
+    if (!Number.isFinite(ms)) return local;
+    return local == null ? ms : Math.min(local, ms);
+  } catch {
+    return local;
   }
 }
 
@@ -242,10 +295,9 @@ function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
     }
   }
 
-  // Online-payment coupons were stripped here while the spec promised COD-only.
-  // Live orders now refuse COD and settle over UPI, so that filter removed the
-  // only coupons that could apply. filterOnlineOnlyCoupons is kept for the day
-  // a COD-only surface returns.
+  // Coupons are deliberately not filtered by payment method. The spec promised
+  // COD-only, but live orders refuse cash and settle over UPI, so filtering out
+  // online-payment coupons removed the only ones that could ever apply.
 
   return outcome;
 }
@@ -304,35 +356,6 @@ export function scrubPhantomCoupon(value: unknown): boolean {
   };
   walk(value);
   return changed;
-}
-
-const ONLINE_ONLY_KEY = /^(requires_?online_?payment|online_?payment_?only|online_?only)$/i;
-
-/** Removes coupons flagged online-payment-only. Returns count removed. */
-export function filterOnlineOnlyCoupons(value: unknown): number {
-  let removed = 0;
-  const isOnlineOnly = (item: unknown): boolean => {
-    if (!item || typeof item !== "object") return false;
-    return Object.entries(item).some(
-      ([k, v]) => ONLINE_ONLY_KEY.test(k) && (v === true || v === "true"),
-    );
-  };
-  const walk = (node: unknown): void => {
-    if (Array.isArray(node)) {
-      for (let i = node.length - 1; i >= 0; i--) {
-        if (isOnlineOnly(node[i])) {
-          node.splice(i, 1);
-          removed++;
-        } else {
-          walk(node[i]);
-        }
-      }
-    } else if (node && typeof node === "object") {
-      Object.values(node).forEach(walk);
-    }
-  };
-  walk(value);
-  return removed;
 }
 
 async function log(
