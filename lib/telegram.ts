@@ -18,13 +18,19 @@ export async function call(method: string, payload: Record<string, unknown>): Pr
  * markers removed and underscores untouched; bare URLs still auto-link.
  */
 export function toPlainText(text: string): string {
-  return text
-    .replace(/```[a-z]*\n?([\s\S]*?)```/gi, "$1")
-    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1: $2")
-    .replace(/`([^`\n]+)`/g, "$1")
-    .replace(/\*\*([^*\n]+)\*\*/g, "$1")
-    .replace(/\*([^*\n]+)\*/g, "$1")
-    .trim();
+  return (
+    text
+      .replace(/```[a-z]*\n?([\s\S]*?)```/gi, "$1")
+      // Headings and rules: smaller models write "### Top Picks" whatever the
+      // prompt says, and Telegram would show the hashes literally.
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, "")
+      .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g, "$1: $2")
+      .replace(/`([^`\n]+)`/g, "$1")
+      .replace(/\*\*([^*\n]+)\*\*/g, "$1")
+      .replace(/\*([^*\n]+)\*/g, "$1")
+      .trim()
+  );
 }
 
 function chunk(text: string): string[] {

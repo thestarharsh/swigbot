@@ -29,6 +29,15 @@ describe("toPlainText", () => {
     expect(toPlainText("[Log in](https://x.test/a_b)")).toBe("Log in: https://x.test/a_b");
   });
 
+  it("drops heading markers and rules, which a small model emits despite the prompt", () => {
+    // Seen live from ministral-14b: "### Top Picks" arrived in Telegram with
+    // the hashes intact.
+    const out = toPlainText("### Top Picks\n⭐ Toor Dal – ₹149\n---\n## Other\nMilk ₹30");
+    expect(out).toBe("Top Picks\n⭐ Toor Dal – ₹149\n\nOther\nMilk ₹30");
+    // A hash that is not a heading marker stays: "#1" is a rank, not a title.
+    expect(toPlainText("Order #1 is on its way")).toBe("Order #1 is on its way");
+  });
+
   it("unwraps fenced code blocks", () => {
     expect(toPlainText('```json\n{"a":1}\n```')).toBe('{"a":1}');
   });
