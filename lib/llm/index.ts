@@ -23,6 +23,16 @@ const PRESETS: Record<string, ProviderPreset> = {
     keyEnv: "GEMINI_API_KEY",
     defaultModel: "gemini-flash-latest",
   },
+  groq: {
+    baseURL: "https://api.groq.com/openai/v1",
+    keyEnv: "GROQ_API_KEY",
+    defaultModel: "openai/gpt-oss-120b",
+  },
+  mistral: {
+    baseURL: "https://api.mistral.ai/v1",
+    keyEnv: "MISTRAL_API_KEY",
+    defaultModel: "mistral-medium-latest",
+  },
   custom: { keyEnv: "LLM_API_KEY", defaultModel: "" },
 };
 

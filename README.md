@@ -1,6 +1,6 @@
 # 🛵 SwigBot
 
-Conversational commerce agent for **Swiggy MCP** (Food, Instamart, Dineout) - order food, groceries, and book tables through natural conversation on **Telegram** or a local **CLI**, with a **BYOK** LLM layer (Anthropic, OpenAI, OpenRouter, Gemini, or any OpenAI-compatible endpoint).
+Conversational commerce agent for **Swiggy MCP** (Food, Instamart, Dineout) - order food, groceries, and book tables through natural conversation on **Telegram** or a local **CLI**, with a **BYOK** LLM layer (Anthropic, OpenAI, OpenRouter, Gemini, Groq, Mistral, or any OpenAI-compatible endpoint).
 
 Built against the Swiggy Builders Club v1 spec. The 21 documented failure modes (cart drift, ₹1000 cap, phantom coupons, slot races, non-idempotent placement, unpaid `PENDING_PAYMENT` orders, …) are handled in the system prompt **and** - for the non-negotiables - enforced in code (`lib/mcp/guardrails.ts`).
 
@@ -40,7 +40,7 @@ pnpm docs:sync                    # optional: re-vendor docs/swiggy/ from mcp.sw
 Minimal `.env.local` for CLI-only dev:
 
 ```env
-LLM_PROVIDER=anthropic            # or openai | openrouter | gemini | custom
+LLM_PROVIDER=anthropic            # or openai | openrouter | gemini | groq | mistral | custom
 ANTHROPIC_API_KEY=sk-ant-...
 DATABASE_URL=postgresql://user:pass@ep-xxx-pooler.region.aws.neon.tech/neondb?sslmode=require
 NEXT_PUBLIC_APP_URL=http://localhost:3000
@@ -69,12 +69,25 @@ LLM_MODEL=poolside/laguna-s-2.1:free
 LLM_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free
 ```
 
-Free-tier quotas worth knowing, measured rather than guessed:
+For letting other people test the bot without paying, **Mistral's free Experiment tier** is the one whose limits actually fit this workload (see the table). Its models are OpenAI-compatible and call tools:
 
-| Provider               | Limit                                             | Notes                                                |
-| ---------------------- | ------------------------------------------------- | ---------------------------------------------------- |
-| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day                  |
-| Gemini free tier       | 20 requests/day per **model**                     | Per-model, so a fallback chain multiplies the budget |
+```env
+LLM_PROVIDER=mistral
+MISTRAL_API_KEY=...
+LLM_MODEL=mistral-medium-latest                  # default
+LLM_MODEL_FALLBACKS=mistral-small-latest
+```
+
+Size matters more than request counts here. One SwigBot request is the ~4K-token system prompt plus ~12-15K tokens of tool schemas (51 tools, and Swiggy's descriptions are long) plus history - call it 20-40K tokens. Any free tier whose tokens-per-minute cap is below that rejects every call outright, which is why Groq's free tier (8K TPM on every tool-capable model) returns 413 on the very first request. The `groq` preset is correct code and works on Groq's paid Dev tier; it is not a free option for this bot.
+
+Free-tier quotas worth knowing:
+
+| Provider               | Limit                                             | Notes                                                                                                     |
+| ---------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| Mistral Experiment     | 1 request/s, 500K tokens/min, 1B tokens/month     | Fits a 40K-token request comfortably. Published numbers; Mistral now says to confirm yours in the console |
+| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day; no TPM squeeze                                                       |
+| Gemini free tier       | 20 requests/day per **model**                     | Per-model, so a fallback chain multiplies the budget                                                      |
+| Groq free tier         | 30 RPM, 1K requests/day, **8K tokens/min**        | Every SwigBot request exceeds the TPM cap, so it 413s. Paid Dev tier only                                 |
 
 A turn costs 3-12 requests, so a 50/day account is roughly 6 turns. Budget accordingly before a live demo.
 
