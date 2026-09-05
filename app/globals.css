@@ -496,6 +496,65 @@ footer a:hover {
   text-decoration: underline;
 }
 
+/* ── Status pages (404, runtime error) ──────────────────────────────── */
+.status-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.status-card {
+  width: min(480px, 100%);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+  padding: 36px 32px 30px;
+  text-align: center;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+}
+
+.status-code {
+  margin-top: 14px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--brand-ink);
+  background: var(--inset);
+  padding: 5px 12px;
+  border-radius: 999px;
+}
+
+.status-card h1 {
+  margin: 4px 0 0;
+  font-size: 26px;
+  font-weight: 800;
+  letter-spacing: -0.018em;
+  text-wrap: balance;
+}
+
+.status-card p {
+  margin: 0 0 14px;
+  max-width: 38ch;
+  color: var(--ink-2);
+  font-size: 15px;
+  text-wrap: pretty;
+}
+
+.status-card .cta {
+  justify-content: center;
+}
+
+.btn[type="button"] {
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
 @media (max-width: 860px) {
   .hero {
     grid-template-columns: 1fr;
