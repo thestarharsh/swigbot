@@ -28,10 +28,14 @@ const PRESETS: Record<string, ProviderPreset> = {
     keyEnv: "GROQ_API_KEY",
     defaultModel: "openai/gpt-oss-120b",
   },
+  // Measured on the Free plan ($10/month included credit): mistral-medium,
+  // mistral-small and magistral answer 429 with a 0 req/min limit, while the
+  // Ministral family has real quota (14b: 30 RPM / 937K TPM). Paid workspaces
+  // can set LLM_MODEL=mistral-medium-latest.
   mistral: {
     baseURL: "https://api.mistral.ai/v1",
     keyEnv: "MISTRAL_API_KEY",
-    defaultModel: "mistral-medium-latest",
+    defaultModel: "ministral-14b-latest",
   },
   custom: { keyEnv: "LLM_API_KEY", defaultModel: "" },
 };

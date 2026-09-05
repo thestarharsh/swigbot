@@ -51,7 +51,7 @@ describe("getChatModel presets", () => {
     env({ LLM_PROVIDER: "mistral", MISTRAL_API_KEY: "test" });
     const model = getChatModel();
     expect(model.provider).toBe("mistral");
-    expect(model.model).toBe("mistral-medium-latest");
+    expect(model.model).toBe("ministral-14b-latest");
   });
 
   it("names the missing key for mistral", () => {

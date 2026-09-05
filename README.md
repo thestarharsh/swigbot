@@ -69,25 +69,27 @@ LLM_MODEL=poolside/laguna-s-2.1:free
 LLM_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it:free
 ```
 
-For letting other people test the bot without paying, **Mistral's free Experiment tier** is the one whose limits actually fit this workload (see the table). Its models are OpenAI-compatible and call tools:
+For letting other people test the bot without paying, **Mistral's Free plan** is the one whose limits actually fit this workload (see the table). It includes $10/month of API credit, but not every model gets quota: `mistral-medium-latest`, `mistral-small-latest` and `magistral-small-latest` answer 429 with a 0 req/min limit on it, while the Ministral family has real quota and drives the tool loop cleanly (measured: both rounds in ~0.5 s per call). OpenAI-compatible, and the adapter needs no Mistral-specific branch:
 
 ```env
 LLM_PROVIDER=mistral
 MISTRAL_API_KEY=...
-LLM_MODEL=mistral-medium-latest                  # default
-LLM_MODEL_FALLBACKS=mistral-small-latest
+LLM_MODEL=ministral-14b-latest                   # default; 30 RPM, 937K TPM on the Free plan
+LLM_MODEL_FALLBACKS=ministral-8b-latest          # 188 RPM, 625K TPM
 ```
+
+On a paid Mistral workspace set `LLM_MODEL=mistral-medium-latest` instead.
 
 Size matters more than request counts here. One SwigBot request is the ~4K-token system prompt plus ~12-15K tokens of tool schemas (51 tools, and Swiggy's descriptions are long) plus history - call it 20-40K tokens. Any free tier whose tokens-per-minute cap is below that rejects every call outright, which is why Groq's free tier (8K TPM on every tool-capable model) returns 413 on the very first request. The `groq` preset is correct code and works on Groq's paid Dev tier; it is not a free option for this bot.
 
 Free-tier quotas worth knowing:
 
-| Provider               | Limit                                             | Notes                                                                                                     |
-| ---------------------- | ------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| Mistral Experiment     | 1 request/s, 500K tokens/min, 1B tokens/month     | Fits a 40K-token request comfortably. Published numbers; Mistral now says to confirm yours in the console |
-| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day; no TPM squeeze                                                       |
-| Gemini free tier       | 20 requests/day per **model**                     | Per-model, so a fallback chain multiplies the budget                                                      |
-| Groq free tier         | 30 RPM, 1K requests/day, **8K tokens/min**        | Every SwigBot request exceeds the TPM cap, so it 413s. Paid Dev tier only                                 |
+| Provider               | Limit                                             | Notes                                                                                                   |
+| ---------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Mistral Free plan      | ministral-14b: 30 RPM, 937K TPM; 8b: 188 RPM      | Measured from the `x-ratelimit-*` headers. medium/small/magistral: 0 RPM on this plan. $10/month credit |
+| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day; no TPM squeeze                                                     |
+| Gemini free tier       | 20 requests/day per **model**                     | Per-model, so a fallback chain multiplies the budget                                                    |
+| Groq free tier         | 30 RPM, 1K requests/day, **8K tokens/min**        | Every SwigBot request exceeds the TPM cap, so it 413s. Paid Dev tier only                               |
 
 A turn costs 3-12 requests, so a 50/day account is roughly 6 turns. Budget accordingly before a live demo.
 
