@@ -41,7 +41,14 @@ function closeOpenToolRound(out: ChatMessage[]): void {
   if (last?.role === "tool_results" && prev?.role === "assistant" && prev.toolCalls?.length) {
     const have = new Set(last.results.map((r) => r.toolCallId));
     const missing = prev.toolCalls.filter((c) => !have.has(c.id));
-    if (missing.length) last.results = [...last.results, ...missing.map(interruptedResult)];
+    // Replaced, not mutated: `history` holds the caller's own objects, and
+    // the persisted rows they came from must stay as they were written.
+    if (missing.length) {
+      out[out.length - 1] = {
+        role: "tool_results",
+        results: [...last.results, ...missing.map(interruptedResult)],
+      };
+    }
   }
 }
 

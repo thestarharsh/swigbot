@@ -2,9 +2,11 @@ import "./load-env";
 
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
+import { messageOf } from "../lib/mcp/errors";
 
 /** Wipes every row, keeping the schema. Linked tokens go too: users re-do OTP. */
 const TABLES = [
+  "turn_locks",
   "messages",
   "tool_call_log",
   "processed_updates",
@@ -24,14 +26,16 @@ async function main() {
   console.log(`Target: ${target}`);
 
   for (const table of TABLES) {
-    const [{ count }] = (await db.execute(
-      sql.raw(`select count(*)::int as count from public.${table}`),
-    )).rows as { count: number }[];
+    const [{ count }] = (
+      await db.execute(sql.raw(`select count(*)::int as count from public.${table}`))
+    ).rows as { count: number }[];
     console.log(`  ${table}: ${count} rows`);
   }
 
   await db.execute(
-    sql.raw(`truncate table ${TABLES.map((t) => `public.${t}`).join(", ")} restart identity cascade`),
+    sql.raw(
+      `truncate table ${TABLES.map((t) => `public.${t}`).join(", ")} restart identity cascade`,
+    ),
   );
 
   console.log("\n✓ all tables truncated, identities restarted");
@@ -40,6 +44,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("✗ reset failed:", err instanceof Error ? err.message : err);
+  console.error("✗ reset failed:", messageOf(err));
   process.exit(1);
 });

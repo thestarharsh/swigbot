@@ -2,7 +2,8 @@ const API = () => `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}
 
 const TELEGRAM_MAX_LEN = 4096;
 
-async function call(method: string, payload: Record<string, unknown>): Promise<Response> {
+/** Raw Bot API call; also used by `pnpm webhook:set`. */
+export async function call(method: string, payload: Record<string, unknown>): Promise<Response> {
   return fetch(`${API()}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

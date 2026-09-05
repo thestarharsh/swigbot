@@ -1,9 +1,11 @@
 import "./load-env";
 
-import { desc, eq, gt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, schema } from "../lib/db";
 import { getMcpSession } from "../lib/mcp/session";
+import { messageOf } from "../lib/mcp/errors";
 import { executeGuardedTool } from "../lib/mcp/guardrails";
+import { latestLinkedToken } from "../lib/swiggy-auth";
 
 /**
  * Post-login integration test, no LLM key needed: connects all three MCP
@@ -11,12 +13,7 @@ import { executeGuardedTool } from "../lib/mcp/guardrails";
  * calls get_addresses through the full guarded path.
  */
 async function main() {
-  const [tokenRow] = await db
-    .select()
-    .from(schema.swiggyTokens)
-    .where(gt(schema.swiggyTokens.expiresAt, new Date()))
-    .orderBy(desc(schema.swiggyTokens.createdAt))
-    .limit(1);
+  const tokenRow = await latestLinkedToken();
 
   if (!tokenRow) {
     console.log(
@@ -62,6 +59,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("✗ failed:", err instanceof Error ? err.message : err);
+  console.error("✗ failed:", messageOf(err));
   process.exit(1);
 });

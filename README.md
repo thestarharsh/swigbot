@@ -2,7 +2,7 @@
 
 Conversational commerce agent for **Swiggy MCP** (Food, Instamart, Dineout) - order food, groceries, and book tables through natural conversation on **Telegram** or a local **CLI**, with a **BYOK** LLM layer (Anthropic, OpenAI, OpenRouter, Gemini, or any OpenAI-compatible endpoint).
 
-Built against the Swiggy Builders Club v1 spec. The 20 documented failure modes (cart drift, ₹1000 cap, phantom coupons, slot races, non-idempotent placement, …) are handled in the system prompt **and** - for the non-negotiables - enforced in code (`lib/mcp/guardrails.ts`).
+Built against the Swiggy Builders Club v1 spec. The 19 documented failure modes (cart drift, ₹1000 cap, phantom coupons, slot races, non-idempotent placement, …) are handled in the system prompt **and** - for the non-negotiables - enforced in code (`lib/mcp/guardrails.ts`).
 
 ## How it works
 
@@ -23,7 +23,7 @@ CLI (pnpm cli) ─────────────┘         │
 
 ## Prerequisites
 
-- Node.js 20+, pnpm
+- Node.js 22+ (24 recommended), pnpm
 - A Postgres database - a [Neon](https://console.neon.tech) free-tier project is enough
 - A Telegram bot token from [@BotFather](https://core.telegram.org/bots/tutorial) (only for Telegram)
 - An API key for one LLM provider
@@ -70,10 +70,10 @@ LLM_MODEL_FALLBACKS=nvidia/nemotron-3-super-120b-a12b:free,google/gemma-4-31b-it
 
 Free-tier quotas worth knowing, measured rather than guessed:
 
-| Provider | Limit | Notes |
-|---|---|---|
-| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day |
-| Gemini free tier | 20 requests/day per **model** | Per-model, so a fallback chain multiplies the budget |
+| Provider               | Limit                                             | Notes                                                |
+| ---------------------- | ------------------------------------------------- | ---------------------------------------------------- |
+| OpenRouter free models | 50 requests/day per **account**, resets 00:00 UTC | $10 of credit raises it to 1000/day                  |
+| Gemini free tier       | 20 requests/day per **model**                     | Per-model, so a fallback chain multiplies the budget |
 
 A turn costs 3-12 requests, so a 50/day account is roughly 6 turns. Budget accordingly before a live demo.
 
@@ -99,7 +99,7 @@ pnpm dev                          # terminal 1
 ngrok http 3000                   # terminal 2 → copy the https URL
 ```
 
-Set in `.env.local`: `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET` (any random string), and `NEXT_PUBLIC_APP_URL=https://<your-ngrok>.ngrok.io`. Restart `pnpm dev`, then:
+Set in `.env.local`: `TELEGRAM_BOT_TOKEN`, `WEBHOOK_SECRET` (**required** - any random string, e.g. `openssl rand -hex 24`), and `NEXT_PUBLIC_APP_URL=https://<your-ngrok>.ngrok.io`. Restart `pnpm dev`, then:
 
 ```bash
 pnpm webhook:set                  # registers the webhook with Telegram
@@ -122,10 +122,10 @@ Vercel replaces ngrok as the webhook host. It cannot yet host the OAuth redirect
 
 Until then the two roles split, which is why the database has to be hosted rather than local - both processes share it:
 
-| Role | URL | Runs on |
-|---|---|---|
-| Telegram webhook | `https://<app>.vercel.app/api/webhook` | Vercel |
-| OAuth redirect | `http://localhost:3000/api/auth/callback/swiggy` | your machine, during login only |
+| Role             | URL                                              | Runs on                         |
+| ---------------- | ------------------------------------------------ | ------------------------------- |
+| Telegram webhook | `https://<app>.vercel.app/api/webhook`           | Vercel                          |
+| OAuth redirect   | `http://localhost:3000/api/auth/callback/swiggy` | your machine, during login only |
 
 ```bash
 pnpm dlx vercel            # link and deploy
@@ -137,7 +137,7 @@ Set these in Vercel's project settings (Environment Variables), then redeploy:
 ```env
 DATABASE_URL=<Neon DIRECT connection string>
 TELEGRAM_BOT_TOKEN=...
-WEBHOOK_SECRET=...
+WEBHOOK_SECRET=...                # required: the route refuses to start without it
 LLM_PROVIDER=...
 OPENROUTER_API_KEY=...          # or whichever provider key
 NEXT_PUBLIC_APP_URL=https://<app>.vercel.app
@@ -152,7 +152,8 @@ pnpm webhook:set
 
 Serverless notes:
 
-- **Update dedupe is in Postgres**, not memory - instances share nothing, and Telegram redelivers on a slow ack.
+- **Update dedupe is in Postgres**, not memory - instances share nothing, and Telegram redelivers on a slow ack. So is the **per-user turn lock** (`turn_locks`, 90s TTL): two messages from one chat land on two instances, and interleaved turns would fight over a single server-side cart. The second gets "still working on your last message".
+- **`WEBHOOK_SECRET` is mandatory in production.** The route throws at module load without it, and `pnpm webhook:set` refuses to register an unprotected endpoint.
 - **`maxDuration = 60`** on the webhook route. A turn makes several LLM and MCP calls; slow free-tier models can exceed the limit on your plan, and the reply is then lost.
 - **The MCP session cache is per instance**, so cold starts reconnect to all three servers (roughly a second).
 - **`DB_POOL_MAX` defaults to 1 on Vercel**, so many instances don't exhaust Neon's connection limit on the direct endpoint.
@@ -162,33 +163,42 @@ Serverless notes:
 ```bash
 pnpm test         # guardrail behaviors: cap/minimum blocks, confirmation gate,
                   # duplicate-placement latch, check-then-retry, track cooldown,
-                  # phantom-coupon scrub, required-arg validation, provider
-                  # message mapping, error classification, backoff policy
+                  # phantom-coupon scrub, paid-slot filter, required-arg
+                  # validation, plus the agent turn loop, the Telegram webhook,
+                  # the OAuth/PKCE flow, MCP session wiring, provider message
+                  # mapping, error classification and backoff policy
+pnpm lint
+pnpm format:check
 pnpm typecheck
 ```
 
+Nothing in the suite touches the network or a real database (`DATABASE_URL` points at a dead port), and every backoff is injected, so the whole run takes under a second.
+
 ## Layout
 
-| Path | What |
-|---|---|
-| `lib/agent.ts` | Turn loop: auth pre-flight → LLM ⇄ tools → reply; history in Postgres |
-| `lib/prompt.ts` | SwigBot system prompt (cache-stable core + per-user runtime context) |
-| `lib/llm/` | Provider-agnostic chat: native Anthropic adapter + OpenAI-compat adapter (covers OpenAI/OpenRouter/Gemini/custom) |
-| `lib/mcp/session.ts` | MCP client per user token: 3 servers, tool discovery, deprecation watch |
-| `lib/mcp/guardrails.ts` | Code-level enforcement: confirmation gate on irreversible calls, one-success-per-turn latch on placement, required-arg validation, ₹1000 cap, ₹99 min, no blind retry of placement (check-then-retry), 10s track cooldown, phantom-coupon scrubbing, tool-call log |
-| `lib/mcp/retry.ts` | Backoff 500ms→8s, ≤5 attempts, 30s wall-clock budget |
-| `lib/llm/backoff.ts` | Retries transient provider failures (429/5xx, honours `Retry-After`) so a saturated free tier doesn't kill a turn |
-| `lib/swiggy-auth.ts` | DCR + per-user PKCE + token storage/logout |
-| `app/api/webhook` | Telegram webhook (instant ack, async processing, secret check, dedupe) |
-| `app/api/auth/callback/swiggy` | OAuth redirect handler (+ Telegram notification) |
-| `scripts/cli-chat.ts` | Local REPL surface |
-| `docs/swiggy/` | Vendored Swiggy Builders Club docs (auth, flows, all 35 tool references) |
+| Path                           | What                                                                                                                                                                                                                                                               |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `lib/agent.ts`                 | Turn loop: auth pre-flight → LLM ⇄ tools → reply; history in Postgres                                                                                                                                                                                              |
+| `lib/prompt.ts`                | SwigBot system prompt (cache-stable core + per-user runtime context)                                                                                                                                                                                               |
+| `lib/llm/`                     | Provider-agnostic chat: native Anthropic adapter + OpenAI-compat adapter (covers OpenAI/OpenRouter/Gemini/custom)                                                                                                                                                  |
+| `lib/mcp/session.ts`           | MCP client per user token: 3 servers, tool discovery, deprecation watch                                                                                                                                                                                            |
+| `lib/mcp/guardrails.ts`        | Code-level enforcement: confirmation gate on irreversible calls, one-success-per-turn latch on placement, required-arg validation, ₹1000 cap, ₹99 min, no blind retry of placement (check-then-retry), 10s track cooldown, phantom-coupon scrubbing, tool-call log |
+| `lib/backoff.ts`               | The one retry loop: attempt cap, wall-clock budget, jittered exponential delay, injectable sleep                                                                                                                                                                   |
+| `lib/mcp/retry.ts`             | MCP policy over it: backoff 500ms→8s, ≤5 attempts, 30s wall-clock budget                                                                                                                                                                                           |
+| `lib/llm/backoff.ts`           | Provider policy over it: transient failures (429/5xx, honours `Retry-After`) so a saturated free tier doesn't kill a turn                                                                                                                                          |
+| `lib/swiggy-auth.ts`           | DCR + per-user PKCE + token storage/logout                                                                                                                                                                                                                         |
+| `app/api/webhook`              | Telegram webhook (instant ack, async processing, secret check, dedupe)                                                                                                                                                                                             |
+| `app/api/auth/callback/swiggy` | OAuth redirect handler (+ Telegram notification)                                                                                                                                                                                                                   |
+| `scripts/cli-chat.ts`          | Local REPL surface                                                                                                                                                                                                                                                 |
+| `docs/swiggy/`                 | Vendored Swiggy Builders Club docs (auth, flows, all 35 tool references)                                                                                                                                                                                           |
 
 ## Design notes & caveats
 
 - **Numeric guardrails are best-effort**: Swiggy's docs don't publish full response schemas, so cart totals are found by tolerant key matching (`bill_total`, `grandTotal`, `total_to_pay`, …). A confident violation hard-blocks placement; anything ambiguous falls through to the prompt-level rules, which the model follows from real response values.
-- **Order placement is never blind-retried.** On an ambiguous 5xx the wrapper waits, calls `get_food_orders`/`get_orders`/`get_booking_status`, and hands the model both facts with explicit instructions (per the ship-to-production doc).
+- **Order placement is never blind-retried.** On an ambiguous 5xx the wrapper waits, calls `get_food_orders` (with the `addressId` the placement carried) or `get_orders` (`activeOnly: true`), and hands the model both facts with explicit instructions. **Dineout is the exception**: the ship-to-production doc points at `get_booking_status`, but that tool requires the `orderId` a failed booking never returns and Dineout has no list-bookings tool, so a failed `book_table` is reported as genuinely unverifiable - do not retry, check the Swiggy app.
+- **Consent has to be unconditional.** The confirmation gate checks for a veto before it checks for a yes, so "yes but change the address first", "ok wait", "yes no" and any reply ending in a question mark are refused. Plain "yes", "haan", "theek hai", "kar do", "go ahead", "place the order" and 👍 still open it.
 - **Telegram is webhook-only** with plain `fetch` - no `node-telegram-bot-api` (that library is long-polling-oriented).
 - **Orders can only succeed once per turn.** The confirmation gate opens on a "yes", but a "yes" stays true for the whole turn, so a model that calls `place_food_order` twice would be authorised twice. A successful placement latches the tool off for the rest of the turn; a failed one does not, so the documented single retry still works.
 - **Rate limits**: none enforced by Swiggy MCP in v1.0; the bot still keeps `track_*` ≥10s apart - read from `tool_call_log`, not process memory, so the gap holds across serverless instances - and caches MCP sessions/addresses per turn.
 - **Cancellations** have no tool by design - the bot gives Swiggy care: **080-67466729**.
+- **Swiggy access tokens are stored in plaintext** in `swiggy_tokens`. Deliberately deferred: they live 5 days, are revocable with `/logout`, and encrypting them needs a key-management story this demo doesn't have. Treat the database as sensitive.

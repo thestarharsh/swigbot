@@ -1,37 +1,22 @@
 import "./load-env";
 
-import { sql } from "drizzle-orm";
-import { db } from "../lib/db";
+import { getTableColumns, getTableName, is, sql, Table } from "drizzle-orm";
+import { db, schema } from "../lib/db";
+import { messageOf } from "../lib/mcp/errors";
 
-/** Confirms the live server and that every table/column the code expects exists. */
-const EXPECTED: Record<string, string[]> = {
-  users: [
-    "id",
-    "platform",
-    "platform_user_id",
-    "name",
-    "saved_address_id",
-    "saved_address_label",
-    "dietary_preferences",
-    "last_ordered_from",
-    "created_at",
-  ],
-  swiggy_tokens: ["user_id", "access_token", "scope", "expires_at", "created_at"],
-  oauth_sessions: ["state", "code_verifier", "user_id", "redirect_uri", "used", "created_at"],
-  oauth_client: ["id", "client_id", "redirect_uris", "raw", "registered_at"],
-  messages: ["id", "user_id", "role", "content", "created_at"],
-  processed_updates: ["update_id", "created_at"],
-  tool_call_log: [
-    "id",
-    "user_id",
-    "server",
-    "tool",
-    "status",
-    "duration_ms",
-    "error_message",
-    "created_at",
-  ],
-};
+/**
+ * Confirms the live server and that every table/column the code expects
+ * exists. Derived from the Drizzle schema rather than hand-maintained, so a
+ * column added in schema.ts can never be forgotten here.
+ */
+const EXPECTED: Record<string, string[]> = Object.fromEntries(
+  Object.values(schema)
+    .filter((t) => is(t, Table))
+    .map((table) => [
+      getTableName(table),
+      Object.values(getTableColumns(table)).map((c) => c.name),
+    ]),
+);
 
 async function main() {
   const version = (await db.execute(sql`select version()`)).rows[0] as { version: string };
@@ -63,9 +48,7 @@ async function main() {
     const missing = expected.filter((c) => !found.has(c));
     const extra = [...found.keys()].filter((c) => !expected.includes(c));
     if (missing.length || extra.length) {
-      console.log(
-        `✗ ${table}: missing [${missing.join(", ")}] unexpected [${extra.join(", ")}]`,
-      );
+      console.log(`✗ ${table}: missing [${missing.join(", ")}] unexpected [${extra.join(", ")}]`);
       failures++;
     } else {
       console.log(`✓ ${table}: ${expected.length} columns`);
@@ -81,7 +64,8 @@ async function main() {
         (select count(*) from public.tool_call_log) as tool_calls,
         (select count(*) from public.oauth_client) as dcr,
         (select count(*) from public.oauth_sessions) as oauth_sessions,
-        (select count(*) from public.processed_updates) as updates
+        (select count(*) from public.processed_updates) as updates,
+        (select count(*) from public.turn_locks) as turn_locks
     `)
   ).rows[0];
   console.log(`\nrow counts: ${JSON.stringify(counts)}`);
@@ -94,6 +78,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("✗ verify failed:", err instanceof Error ? err.message : err);
+  console.error("✗ verify failed:", messageOf(err));
   process.exit(1);
 });

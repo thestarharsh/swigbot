@@ -30,6 +30,6 @@ describe("toPlainText", () => {
   });
 
   it("unwraps fenced code blocks", () => {
-    expect(toPlainText("```json\n{\"a\":1}\n```")).toBe('{"a":1}');
+    expect(toPlainText('```json\n{"a":1}\n```')).toBe('{"a":1}');
   });
 });

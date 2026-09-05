@@ -3,6 +3,7 @@ import "./load-env";
 import readline from "readline";
 import { ensureUser, runAgentTurn } from "../lib/agent";
 import { getChatModel } from "../lib/llm";
+import { messageOf } from "../lib/mcp/errors";
 import { logout } from "../lib/swiggy-auth";
 
 /**
@@ -14,10 +15,12 @@ async function main() {
 
   try {
     const model = getChatModel();
-    console.log(`SwigBot CLI - LLM: ${model.provider}/${model.model}. Type a message, or 'exit' to quit.\n`);
+    console.log(
+      `SwigBot CLI - LLM: ${model.provider}/${model.model}. Type a message, or 'exit' to quit.\n`,
+    );
   } catch (err) {
     console.log(
-      `SwigBot CLI - ⚠️  ${err instanceof Error ? err.message : err}\n` +
+      `SwigBot CLI - ⚠️  ${messageOf(err)}\n` +
         `Account linking will work, but chat needs an LLM key in .env.local.\n` +
         `Edit .env.local, then restart this CLI (env is read at startup).\n`,
     );
@@ -33,7 +36,9 @@ async function main() {
 
     if (line === "/logout") {
       await logout(user.id);
-      console.log("\nswigbot> Done. Your Swiggy account has been unlinked. Say hi to get a new login link.\n");
+      console.log(
+        "\nswigbot> Done. Your Swiggy account has been unlinked. Say hi to get a new login link.\n",
+      );
       continue;
     }
 
@@ -41,7 +46,7 @@ async function main() {
       const reply = await runAgentTurn(user, "cli", line);
       console.log(`\nswigbot> ${reply}\n`);
     } catch (err) {
-      console.error("error:", err instanceof Error ? err.message : err);
+      console.error("error:", messageOf(err));
     }
   }
 

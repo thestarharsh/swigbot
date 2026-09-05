@@ -1,6 +1,11 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  resolve: {
+    // Route handlers import through the `@/` alias tsconfig defines.
+    alias: { "@": fileURLToPath(new URL(".", import.meta.url)) },
+  },
   test: {
     // Deliberately unreachable: the guardrail tests import lib/db for its
     // tool-call log, and must never write to a real database. Failed log

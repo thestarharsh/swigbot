@@ -1,13 +1,6 @@
 import OpenAI from "openai";
 import { withLlmRetry } from "./backoff";
-import type {
-  ChatModel,
-  ChatRequest,
-  ChatResponse,
-  ChatMessage,
-  StopReason,
-  ToolCall,
-} from "./types";
+import type { ChatModel, ChatRequest, ChatResponse, StopReason, ToolCall } from "./types";
 
 const STOP_MAP: Record<string, StopReason> = {
   stop: "end",
@@ -22,7 +15,10 @@ const MAX_ROUTED_MODELS = 3;
 
 export function toOpenAiMessages(req: ChatRequest): OAMessage[] {
   const out: OAMessage[] = [
-    { role: "system", content: [req.system.stable, req.system.dynamic].filter(Boolean).join("\n\n") },
+    {
+      role: "system",
+      content: [req.system.stable, req.system.dynamic].filter(Boolean).join("\n\n"),
+    },
   ];
   for (const m of req.messages) {
     switch (m.role) {
@@ -71,7 +67,8 @@ export class OpenAiCompatChatModel implements ChatModel {
     /** Models to try when the primary is rate limited or unavailable. */
     private readonly fallbacks: string[] = [],
   ) {
-    this.client = new OpenAI({ apiKey, baseURL });
+    // withLlmRetry is the only retry layer; SDK retries would nest inside it.
+    this.client = new OpenAI({ apiKey, baseURL, maxRetries: 0 });
   }
 
   /**
@@ -138,10 +135,9 @@ export class OpenAiCompatChatModel implements ChatModel {
     for (const [index, model] of candidates.entries()) {
       const isLast = index === candidates.length - 1;
       try {
-        completion = await withLlmRetry(
-          () => this.createChecked({ ...body, model }),
-          { retryRateLimit: isLast },
-        );
+        completion = await withLlmRetry(() => this.createChecked({ ...body, model }), {
+          retryRateLimit: isLast,
+        });
         if (index > 0) console.warn(`[llm] served by fallback model ${model}`);
         break;
       } catch (err) {
@@ -158,7 +154,7 @@ export class OpenAiCompatChatModel implements ChatModel {
     const toolCalls: ToolCall[] = [];
     for (const tc of choice.message.tool_calls ?? []) {
       if (tc.type !== "function") continue;
-      let input: Record<string, unknown> = {};
+      let input: Record<string, unknown>;
       try {
         input = JSON.parse(tc.function.arguments || "{}");
       } catch {

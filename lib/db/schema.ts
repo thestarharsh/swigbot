@@ -11,7 +11,12 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 
-/** One row per end user per platform; feeds the prompt's runtime context. */
+/**
+ * One row per end user per platform; feeds the prompt's runtime context.
+ * Cached Swiggy profile hints (saved address, dietary preferences, last
+ * restaurant) used to live here but nothing ever wrote them - the address and
+ * the cart are read fresh from Swiggy every turn.
+ */
 export const users = pgTable(
   "users",
   {
@@ -19,11 +24,6 @@ export const users = pgTable(
     platform: text("platform").notNull(), // "telegram" | "cli" | ...
     platformUserId: text("platform_user_id").notNull(),
     name: text("name"),
-    // Cached Swiggy profile hints used for {{SAVED_ADDRESS_*}} / {{DIETARY_PREFERENCES}}
-    savedAddressId: text("saved_address_id"),
-    savedAddressLabel: text("saved_address_label"),
-    dietaryPreferences: text("dietary_preferences"),
-    lastOrderedFrom: text("last_ordered_from"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [uniqueIndex("users_platform_uid").on(t.platform, t.platformUserId)],
@@ -61,7 +61,10 @@ export const oauthClient = pgTable("oauth_client", {
   registeredAt: timestamp("registered_at").defaultNow().notNull(),
 });
 
-/** Conversation history. `content` holds the provider-agnostic ChatMessage JSON. */
+/**
+ * Conversation history. `content` holds the provider-agnostic ChatMessage
+ * JSON; `role` mirrors it verbatim - "user" | "assistant" | "tool_results".
+ */
 export const messages = pgTable(
   "messages",
   {
@@ -99,3 +102,17 @@ export const toolCallLog = pgTable(
   },
   (t) => [index("tool_call_log_user_created").on(t.userId, t.createdAt)],
 );
+
+/**
+ * One in-flight turn per user. Serverless instances share no memory, so two
+ * concurrent messages from the same chat would otherwise interleave their
+ * tool calls against one server-side cart. Rows expire rather than unlock,
+ * so a crashed instance cannot wedge a user out.
+ */
+export const turnLocks = pgTable("turn_locks", {
+  userId: integer("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});

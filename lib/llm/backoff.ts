@@ -1,4 +1,4 @@
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { backoff } from "../backoff";
 
 const MAX_ATTEMPTS = 4;
 const WALL_CLOCK_MS = 45_000;
@@ -35,25 +35,25 @@ function isTransient(err: unknown): boolean {
 /** Retries transient provider failures; free pools 429 often enough to matter. */
 export async function withLlmRetry<T>(
   fn: () => Promise<T>,
-  { retryRateLimit = true }: { retryRateLimit?: boolean } = {},
+  {
+    retryRateLimit = true,
+    sleep,
+  }: { retryRateLimit?: boolean; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<T> {
-  const start = Date.now();
-  let attempt = 0;
-  for (;;) {
-    try {
-      return await fn();
-    } catch (err) {
-      attempt++;
-      // With a model left to try, waiting out a rate limit is wasted time.
-      if (!retryRateLimit && statusOf(err) === 429) throw err;
-      if (attempt >= MAX_ATTEMPTS || !isTransient(err)) throw err;
-      const base = Math.min(BASE_DELAY_MS * 2 ** (attempt - 1), MAX_DELAY_MS);
-      const delay = retryAfterMs(err) ?? base + Math.random() * base * 0.3;
-      if (Date.now() + delay - start > WALL_CLOCK_MS) throw err;
+  return backoff(fn, {
+    maxAttempts: MAX_ATTEMPTS,
+    wallClockMs: WALL_CLOCK_MS,
+    baseDelayMs: BASE_DELAY_MS,
+    maxDelayMs: MAX_DELAY_MS,
+    // With a model left to try, waiting out a rate limit is wasted time.
+    isRetryable: (err) => (retryRateLimit || statusOf(err) !== 429) && isTransient(err),
+    retryAfterMs,
+    onRetry: (err, attempt, delay) =>
       console.warn(
-        `[llm] transient ${statusOf(err) ?? "network"} error, retry ${attempt}/${MAX_ATTEMPTS - 1} in ${Math.round(delay)}ms`,
-      );
-      await sleep(delay);
-    }
-  }
+        `[llm] transient ${statusOf(err) ?? "network"} error, retry ${attempt}/${
+          MAX_ATTEMPTS - 1
+        } in ${Math.round(delay)}ms`,
+      ),
+    sleep,
+  });
 }

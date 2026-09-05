@@ -11,7 +11,8 @@ export class SwiggyAuthError extends Error {
   }
 }
 
-function messageOf(err: unknown): string {
+/** The message of anything thrown; used wherever an error is logged or matched. */
+export function messageOf(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
 }
@@ -38,9 +39,4 @@ export function isRetryableError(err: unknown): boolean {
   return /\b50[0234]\b|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|fetch failed|network|socket hang up|overloaded/i.test(
     messageOf(err),
   );
-}
-
-/** Bad input (HTTP 400, "Invalid ...", "Missing ..."): fix the args, never retry. */
-export function isBadInputError(err: unknown): boolean {
-  return /\b400\b|^invalid |^missing |\binvalid_request\b/i.test(messageOf(err));
 }

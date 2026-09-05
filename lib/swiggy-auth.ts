@@ -1,8 +1,7 @@
 import crypto from "crypto";
-import { and, eq, lt } from "drizzle-orm";
+import { and, desc, eq, gt, lt } from "drizzle-orm";
 import { db, schema } from "./db";
-
-const BASE = () => process.env.SWIGGY_MCP_BASE_URL ?? "https://mcp.swiggy.com";
+import { swiggyBaseUrl } from "./swiggy-config";
 
 /**
  * Kept separate from the public app URL: Swiggy allowlists redirect URIs by
@@ -25,7 +24,7 @@ export async function getClientId(): Promise<string> {
   const [existing] = await db.select().from(schema.oauthClient).limit(1);
   if (existing && existing.redirectUris.includes(uri)) return existing.clientId;
 
-  const res = await fetch(`${BASE()}/auth/register`, {
+  const res = await fetch(`${swiggyBaseUrl()}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -84,7 +83,7 @@ export async function beginAuth(userId: number): Promise<string> {
     state,
     scope: "mcp:tools",
   });
-  return `${BASE()}/auth/authorize?${params}`;
+  return `${swiggyBaseUrl()}/auth/authorize?${params}`;
 }
 
 /**
@@ -92,17 +91,20 @@ export async function beginAuth(userId: number): Promise<string> {
  * token, stores it against the user, and returns the linked user id.
  */
 export async function handleCallback(code: string, state: string): Promise<number> {
+  // Claimed before the exchange, not after: a double-opened link otherwise
+  // ran two exchanges against the same single-use code.
   const [session] = await db
-    .select()
-    .from(schema.oauthSessions)
-    .where(and(eq(schema.oauthSessions.state, state), eq(schema.oauthSessions.used, false)));
+    .update(schema.oauthSessions)
+    .set({ used: true })
+    .where(and(eq(schema.oauthSessions.state, state), eq(schema.oauthSessions.used, false)))
+    .returning();
   if (!session) throw new Error("Unknown or already-used OAuth state");
   if (Date.now() - session.createdAt.getTime() > AUTH_SESSION_TTL_MS) {
     throw new Error("Login link expired - request a new one from the bot");
   }
 
   const clientId = await getClientId();
-  const res = await fetch(`${BASE()}/auth/token`, {
+  const res = await fetch(`${swiggyBaseUrl()}/auth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -141,11 +143,6 @@ export async function handleCallback(code: string, state: string): Promise<numbe
       },
     });
 
-  await db
-    .update(schema.oauthSessions)
-    .set({ used: true })
-    .where(eq(schema.oauthSessions.state, state));
-
   return session.userId;
 }
 
@@ -163,6 +160,20 @@ export async function getValidToken(userId: number): Promise<string | null> {
   return row.accessToken;
 }
 
+/**
+ * The most recently linked account with a live token, for the scripts that
+ * need any real session (smoke:tools, schemas). Null when nobody has logged in.
+ */
+export async function latestLinkedToken(): Promise<typeof schema.swiggyTokens.$inferSelect | null> {
+  const [row] = await db
+    .select()
+    .from(schema.swiggyTokens)
+    .where(gt(schema.swiggyTokens.expiresAt, new Date()))
+    .orderBy(desc(schema.swiggyTokens.createdAt))
+    .limit(1);
+  return row ?? null;
+}
+
 /** Drops a token the server rejected. */
 export async function invalidateToken(userId: number): Promise<void> {
   await db.delete(schema.swiggyTokens).where(eq(schema.swiggyTokens.userId, userId));
@@ -172,7 +183,7 @@ export async function invalidateToken(userId: number): Promise<void> {
 export async function logout(userId: number): Promise<void> {
   const token = await getValidToken(userId);
   if (token) {
-    await fetch(`${BASE()}/auth/logout`, {
+    await fetch(`${swiggyBaseUrl()}/auth/logout`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}` },
     }).catch(() => {});

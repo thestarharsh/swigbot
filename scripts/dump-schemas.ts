@@ -1,17 +1,12 @@
 import "./load-env";
 
-import { desc, gt } from "drizzle-orm";
-import { db, schema } from "../lib/db";
 import { getMcpSession } from "../lib/mcp/session";
+import { messageOf } from "../lib/mcp/errors";
+import { latestLinkedToken } from "../lib/swiggy-auth";
 
 /** Prints each discovered tool's required arguments, to sanity-check validation. */
 async function main() {
-  const [tokenRow] = await db
-    .select()
-    .from(schema.swiggyTokens)
-    .where(gt(schema.swiggyTokens.expiresAt, new Date()))
-    .orderBy(desc(schema.swiggyTokens.createdAt))
-    .limit(1);
+  const tokenRow = await latestLinkedToken();
   if (!tokenRow) throw new Error("no linked account");
 
   const session = await getMcpSession(tokenRow.accessToken);
@@ -27,6 +22,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("failed:", err instanceof Error ? err.message : err);
+  console.error("failed:", messageOf(err));
   process.exit(1);
 });

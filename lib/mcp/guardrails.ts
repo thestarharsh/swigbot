@@ -1,8 +1,8 @@
 import { sql } from "drizzle-orm";
 import { db, schema } from "../db";
 import { withRetry, sleep } from "./retry";
-import { isRetryableError } from "./errors";
-import type { SwiggyMcpSession, ToolCallOutcome } from "./session";
+import { isRetryableError, messageOf } from "./errors";
+import type { ServerKey, SwiggyMcpSession, ToolCallOutcome } from "./session";
 
 /**
  * Hard guardrails enforced in code, so they hold when the model ignores the
@@ -18,14 +18,27 @@ const PLACEMENT_CHECK_DELAY_MS = 2_500;
 /** Spends money or reserves a table: never retried blindly, never unconfirmed. */
 const IRREVERSIBLE = new Set(["place_food_order", "checkout", "book_table"]);
 
-/** Consulted when an irreversible call fails ambiguously. */
+/** Destructive too, but nothing is placed: gated on consent, never latched. */
+const CONFIRM_REQUIRED = new Set([...IRREVERSIBLE, "delete_address"]);
+
+/**
+ * Consulted when a placement fails ambiguously. `book_table` is deliberately
+ * absent: `get_booking_status` needs an orderId a failed booking never
+ * returned, and Dineout has no list-bookings tool, so there is nothing to ask.
+ */
 const PLACEMENT_CHECK_TOOL: Record<string, string> = {
   place_food_order: "get_food_orders",
   checkout: "get_orders",
-  book_table: "get_booking_status",
 };
 
 const TRACK_TOOLS = new Set(["track_food_order", "track_order"]);
+
+/** Swiggy's own domain names, which differ from our server keys. */
+const REPORT_DOMAIN: Record<ServerKey, string> = {
+  food: "food",
+  instamart: "im",
+  dineout: "dineout",
+};
 
 const lastTrackAt = new Map<string, number>();
 
@@ -53,8 +66,7 @@ export async function executeGuardedTool(
   try {
     outcome = await runGuarded(session, userId, name, args, turn);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    await log(session, userId, name, "error", Date.now() - started, message);
+    await log(session, userId, name, "error", Date.now() - started, messageOf(err));
     throw err;
   }
 
@@ -70,7 +82,7 @@ export async function executeGuardedTool(
 }
 
 function blocked(text: string): ToolCallOutcome {
-  return { text, isError: true, raw: null };
+  return { text, isError: true };
 }
 
 async function runGuarded(
@@ -98,6 +110,13 @@ async function runGuarded(
     );
   }
 
+  // report_error exists on all three servers, so an omitted domain would be
+  // auto-detected against whichever copy we happened to register.
+  if (name === "report_error" && !args.domain && typeof args.tool === "string") {
+    const server = session.serverFor(args.tool);
+    if (server) args = { ...args, domain: REPORT_DOMAIN[server] };
+  }
+
   if (TRACK_TOOLS.has(name)) {
     const since = await msSinceLastTrack(userId, name);
     if (since != null && since < TRACK_COOLDOWN_MS) {
@@ -107,25 +126,29 @@ async function runGuarded(
           `Do not call this tool again yet.`,
       );
     }
-    lastTrackAt.set(`${userId}:${name}`, Date.now());
   }
 
-  if (IRREVERSIBLE.has(name)) {
-    if (turn?.completed?.has(name)) {
-      return blocked(
-        `BLOCKED - "${name}" already completed successfully in this turn. Calling it again ` +
-          `would place a second, duplicate order. Read the earlier result: it holds the ` +
-          `order id and status. Report that to the user instead of calling this tool again.`,
-      );
-    }
-    if (!isConfirmation(turn?.userText)) {
-      return blocked(
-        `BLOCKED - the user has not confirmed. "${name}" spends real money and may only run ` +
-          `immediately after the user explicitly agrees. Show the final summary (items, total, ` +
-          `address, payment method) and ask them to reply "Yes" to confirm. ` +
-          `Do not call this tool again until they do.`,
-      );
-    }
+  if (IRREVERSIBLE.has(name) && turn?.completed?.has(name)) {
+    return blocked(
+      `BLOCKED - "${name}" already completed successfully in this turn. Calling it again ` +
+        `would place a second, duplicate order. Read the earlier result: it holds the ` +
+        `order id and status. Report that to the user instead of calling this tool again.`,
+    );
+  }
+
+  if (CONFIRM_REQUIRED.has(name) && !isConfirmation(turn?.userText)) {
+    const stake = IRREVERSIBLE.has(name)
+      ? "spends real money"
+      : "permanently deletes a saved address";
+    const summary = IRREVERSIBLE.has(name)
+      ? "items, total, address, payment method"
+      : "which address, in full";
+    return blocked(
+      `BLOCKED - the user has not confirmed. "${name}" ${stake} and may only run ` +
+        `immediately after the user explicitly agrees. Show the final summary (${summary}) ` +
+        `and ask them to reply "Yes" to confirm. ` +
+        `Do not call this tool again until they do.`,
+    );
   }
 
   if (name === "place_food_order" || name === "checkout") {
@@ -134,7 +157,13 @@ async function runGuarded(
   }
 
   if (!IRREVERSIBLE.has(name)) {
-    return postProcess(name, await withRetry(() => session.callTool(name, args)));
+    const outcome = postProcess(name, await withRetry(() => session.callTool(name, args)));
+    // Started only by a call that actually returned a status: a failed track
+    // told the user nothing, so it must not cost them the next 10 seconds.
+    if (TRACK_TOOLS.has(name) && !outcome.isError) {
+      lastTrackAt.set(`${userId}:${name}`, Date.now());
+    }
+    return outcome;
   }
 
   try {
@@ -146,14 +175,21 @@ async function runGuarded(
     return outcome;
   } catch (err) {
     if (!isRetryableError(err)) throw err;
+
+    if (name === "book_table") {
+      return blocked(
+        `book_table hit a server error and MAY OR MAY NOT have created the booking. There is ` +
+          `no way to verify it from here: get_booking_status needs an orderId that a failed ` +
+          `booking never returned, and Dineout has no tool that lists bookings. Do NOT retry ` +
+          `book_table - a retry could reserve a second table. Tell the user plainly that the ` +
+          `booking may or may not have gone through, ask them to check Bookings in the Swiggy ` +
+          `app, and to only try again if it is not there.`,
+      );
+    }
+
     const checkTool = PLACEMENT_CHECK_TOOL[name];
     await sleep(PLACEMENT_CHECK_DELAY_MS);
-    let checkText = "(status check also failed)";
-    try {
-      checkText = (await session.callTool(checkTool, cartArgs(checkTool, args))).text;
-    } catch {
-      // Keep the placeholder; the model is told the check itself failed.
-    }
+    const checkText = await checkPlacement(session, checkTool, args);
     return blocked(
       `${name} hit a server error and MAY OR MAY NOT have gone through - it must not be ` +
         `blindly retried. Current result of ${checkTool}:\n\n${checkText}\n\n` +
@@ -196,6 +232,35 @@ async function msSinceLastTrack(userId: number, tool: string): Promise<number | 
   }
 }
 
+/**
+ * Reads back whether an ambiguous placement actually landed. The check is
+ * validated like any other call: sending it with a missing required argument
+ * would return an error the model could misread as "the order is not there".
+ */
+async function checkPlacement(
+  session: SwiggyMcpSession,
+  checkTool: string,
+  args: Record<string, unknown>,
+): Promise<string> {
+  const tool = session.tools.find((t) => t.name === checkTool);
+  if (!tool) {
+    return `(${checkTool} is not available in this session, so this cannot be verified here)`;
+  }
+  const checkArgs = placementCheckArgs(checkTool, args);
+  const missing = missingRequiredArgs(tool.inputSchema, checkArgs);
+  if (missing.length) {
+    return (
+      `(cannot verify: ${checkTool} requires ${missing.join(", ")}, which the failed call ` +
+      `did not carry - ask the user to check the Swiggy app)`
+    );
+  }
+  try {
+    return (await session.callTool(checkTool, checkArgs)).text;
+  } catch {
+    return "(status check also failed)";
+  }
+}
+
 /** Forwards only the address args the guarded read itself requires. */
 function cartArgs(tool: string, args: Record<string, unknown>): Record<string, unknown> {
   const addressId = args.addressId ?? args.selectedAddressId;
@@ -203,8 +268,23 @@ function cartArgs(tool: string, args: Record<string, unknown>): Record<string, u
   return needsAddress.has(tool) && addressId ? { addressId } : {};
 }
 
+function placementCheckArgs(tool: string, args: Record<string, unknown>): Record<string, unknown> {
+  // get_orders defaults to 15 days of history; only an active order can be
+  // the one that was just attempted.
+  if (tool === "get_orders") return { activeOnly: true };
+  return cartArgs(tool, args);
+}
+
+/**
+ * Consent that is conditional, deferred or retracted is not consent. Checked
+ * before the affirmative words, so "yes but change the address first" and
+ * "sure, but what's the delivery time?" do not open the gate.
+ */
+const VETO_WORD =
+  /\b(but|wait|no|nope|not|don\s?t|first|instead|hold|stop|cancel|nahi|nahin|mat|ruko|what|which|when|where|how|why|who|kya|kaise|kab|kahan)\b/i;
+
 const AFFIRMATIVE_WORD =
-  /^(y|ya|yes|yep|yeah|yup|ok|okay|sure|confirm|confirmed|proceed|done|go|haan|ha|han|theek|thik|bilkul)\b/i;
+  /^(ya|yes|yep|yeah|yup|ok|okay|sure|confirm|confirmed|proceed|haan|han|theek|thik|bilkul)\b/i;
 
 const AFFIRMATIVE_PHRASE =
   /\b(place (the |my )?order|go ahead|do it|book it|confirm(ing)? (it|the order)|order (it|kar do)|place kar do|kar do)\b/i;
@@ -219,9 +299,12 @@ export function isConfirmation(userText: string | undefined): boolean {
   const text = userText.trim();
   if (!text) return false;
   if (/^[✅👍🆗👌]+$/u.test(text)) return true;
+  // A question is a request for more, never a go-ahead.
+  if (text.endsWith("?")) return false;
 
   const words = text.replace(/[^\p{L}\p{N}\s]/gu, " ").trim();
   if (!words) return false;
+  if (VETO_WORD.test(words)) return false;
   if (AFFIRMATIVE_PHRASE.test(words)) return true;
   // A leading "yes" counts only in a short reply; a long sentence opening
   // with "ok" is just conversation.
@@ -237,7 +320,8 @@ export function missingRequiredArgs(
   if (!Array.isArray(required)) return [];
   return required.filter(
     (key): key is string =>
-      typeof key === "string" && (args[key] === undefined || args[key] === null || args[key] === ""),
+      typeof key === "string" &&
+      (args[key] === undefined || args[key] === null || args[key] === ""),
   );
 }
 
@@ -295,6 +379,14 @@ function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
     }
   }
 
+  if (name === "get_available_slots") {
+    const parsed = tryParseJson(outcome.text);
+    const hidden = parsed == null ? 0 : dropPaidSlots(parsed);
+    if (hidden > 0) {
+      return { ...outcome, text: JSON.stringify(parsed) };
+    }
+  }
+
   // Coupons are deliberately not filtered by payment method. The spec promised
   // COD-only, but live orders refuse cash and settle over UPI, so filtering out
   // online-payment coupons removed the only ones that could ever apply.
@@ -312,27 +404,91 @@ export function tryParseJson(text: string): unknown | null {
   }
 }
 
-const TOTAL_KEY =
-  /^(grand_?total|bill_?total|cart_?total|total_?(amount|payable|price|to_?pay|value)|total|payable_?amount|amount_?payable|to_?pay)$/i;
+/**
+ * Payable-style keys first, so a discount is not read as a violation: items
+ * totalling ₹1100 with ₹200 off is a ₹900 order and must not be blocked.
+ * Only when none is present does a bare subtotal count.
+ */
+const PAYABLE_KEY =
+  /^(total_?to_?pay|to_?pay|amount_?payable|payable_?amount|total_?payable|grand_?total|bill_?total|final_?amount|net_?amount)$/i;
 
-/** Largest number under a total-ish key; the payable total dominates subtotals. */
+const SUBTOTAL_KEY = /^(cart_?total|total_?amount|total)$/i;
+
+interface FoundTotal {
+  value: number;
+  depth: number;
+}
+
 export function extractCartTotal(value: unknown): number | null {
-  const found: number[] = [];
-  const walk = (node: unknown): void => {
+  const ranks: FoundTotal[][] = [[], []];
+  const walk = (node: unknown, depth: number): void => {
     if (Array.isArray(node)) {
-      node.forEach(walk);
+      node.forEach((child) => walk(child, depth + 1));
     } else if (node && typeof node === "object") {
       for (const [key, val] of Object.entries(node)) {
-        if (TOTAL_KEY.test(key)) {
+        const rank = PAYABLE_KEY.test(key) ? 0 : SUBTOTAL_KEY.test(key) ? 1 : -1;
+        if (rank >= 0) {
           const n = typeof val === "number" ? val : Number(val);
-          if (Number.isFinite(n) && n >= 0) found.push(n);
+          if (Number.isFinite(n) && n >= 0) ranks[rank].push({ value: n, depth });
         }
-        walk(val);
+        walk(val, depth + 1);
       }
     }
   };
+  walk(value, 0);
+
+  const found = ranks.find((r) => r.length);
+  if (!found) return null;
+  // A bill-level total sits above the line items that make it up.
+  const shallowest = Math.min(...found.map((f) => f.depth));
+  return Math.max(...found.filter((f) => f.depth === shallowest).map((f) => f.value));
+}
+
+/**
+ * Problem 13: only free Dineout slots may reach the model. Paid deals are
+ * rejected at cart creation anyway, so surfacing one only invites a booking
+ * that cannot complete. Returns how many entries were removed.
+ */
+export function dropPaidSlots(value: unknown): number {
+  let hidden = 0;
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (let i = node.length - 1; i >= 0; i--) {
+        const child = node[i];
+        if (isRecord(child) && isPaidSlot(child)) {
+          node.splice(i, 1);
+          hidden++;
+        } else {
+          walk(child);
+        }
+      }
+      return;
+    }
+    if (isRecord(node)) Object.values(node).forEach(walk);
+  };
   walk(value);
-  return found.length ? Math.max(...found) : null;
+
+  if (hidden > 0) {
+    const note =
+      `${hidden} paid/prime slot${hidden > 1 ? "s were" : " was"} hidden - only free ` +
+      `Dineout slots (isFree true, bookingPrice 0) can be booked.`;
+    if (Array.isArray(value)) value.push({ _paid_slots_hidden: note });
+    else if (isRecord(value)) value._paid_slots_hidden = note;
+  }
+  return hidden;
+}
+
+function isRecord(node: unknown): node is Record<string, unknown> {
+  return !!node && typeof node === "object" && !Array.isArray(node);
+}
+
+/** Tolerant to key casing; Swiggy publishes no schema for the slot payload. */
+function isPaidSlot(node: Record<string, unknown>): boolean {
+  const free = node.isFree ?? node.is_free;
+  if (free === false || free === "false") return true;
+  const raw = node.bookingPrice ?? node.booking_price;
+  const price = typeof raw === "number" ? raw : Number(raw);
+  return raw != null && raw !== "" && Number.isFinite(price) && price > 0;
 }
 
 /** Drops coupon_applied when coupon_discount is 0. Returns true if changed. */
@@ -345,7 +501,11 @@ export function scrubPhantomCoupon(value: unknown): boolean {
       const obj = node as Record<string, unknown>;
       const discount = obj.coupon_discount ?? obj.couponDiscount;
       const applied =
-        "coupon_applied" in obj ? "coupon_applied" : "couponApplied" in obj ? "couponApplied" : null;
+        "coupon_applied" in obj
+          ? "coupon_applied"
+          : "couponApplied" in obj
+            ? "couponApplied"
+            : null;
       if (applied && (discount === 0 || discount === "0" || discount == null)) {
         delete obj[applied];
         obj._coupon_note = "No coupon is actually applied (coupon_discount was 0).";

@@ -32,14 +32,12 @@ function toAnthropicMessages(messages: ChatMessage[]): Anthropic.MessageParam[] 
         // All results for one assistant turn go back in a single user message.
         return {
           role: "user",
-          content: m.results.map(
-            (r): Anthropic.ToolResultBlockParam => ({
-              type: "tool_result",
-              tool_use_id: r.toolCallId,
-              content: r.content,
-              is_error: r.isError ?? false,
-            }),
-          ),
+          content: m.results.map((r): Anthropic.ToolResultBlockParam => ({
+            type: "tool_result",
+            tool_use_id: r.toolCallId,
+            content: r.content,
+            is_error: r.isError ?? false,
+          })),
         };
     }
   });
@@ -53,7 +51,8 @@ export class AnthropicChatModel implements ChatModel {
     readonly model: string,
     apiKey: string,
   ) {
-    this.client = new Anthropic({ apiKey });
+    // withLlmRetry is the only retry layer; SDK retries would nest inside it.
+    this.client = new Anthropic({ apiKey, maxRetries: 0 });
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -73,13 +72,11 @@ export class AnthropicChatModel implements ChatModel {
         model: this.model,
         max_tokens: req.maxTokens ?? 4096,
         system,
-        tools: req.tools.map(
-          (t): Anthropic.Tool => ({
-            name: t.name,
-            description: t.description,
-            input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
-          }),
-        ),
+        tools: req.tools.map((t): Anthropic.Tool => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
+        })),
         messages: toAnthropicMessages(req.messages),
       }),
     );

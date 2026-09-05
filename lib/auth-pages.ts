@@ -147,7 +147,7 @@ export function renderAuthPage(opts: AuthPageOptions): string {
         : ""
     }
     <span class="badge ${ok ? "ok" : "err"}">${ok ? "Account linked" : "Not linked yet"}</span>
-    <div class="foot">Unofficial demo on Swiggy MCP · orders are Cash&nbsp;on&nbsp;Delivery only</div>
+    <div class="foot">Unofficial demo on Swiggy MCP · SwigBot confirms with you before every order</div>
   </main>
 </body>
 </html>`;

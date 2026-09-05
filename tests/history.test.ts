@@ -67,6 +67,25 @@ describe("sanitizeHistory", () => {
     expect(out).toHaveLength(2);
   });
 
+  it("never mutates the caller's own message objects", () => {
+    // `history` is built from persisted rows; back-filling in place rewrote
+    // the object the row had been read into.
+    const results = [result("t1")];
+    const partial: ChatMessage = { role: "tool_results", results };
+    const history: ChatMessage[] = [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "", toolCalls: [call("t1"), call("t2")] },
+      partial,
+      { role: "assistant", content: "done" },
+    ];
+    const out = sanitizeHistory(history);
+
+    expect(results).toHaveLength(1);
+    expect(partial).toEqual({ role: "tool_results", results: [result("t1")] });
+    expect(out[2].role === "tool_results" && out[2].results).toHaveLength(2);
+    expect(out[2]).not.toBe(partial);
+  });
+
   it("leaves a well-formed history untouched", () => {
     const history: ChatMessage[] = [
       { role: "user", content: "add biryani" },

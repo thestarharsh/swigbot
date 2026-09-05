@@ -15,7 +15,11 @@ function page(opts: AuthPageOptions, status: number) {
 /** Users see plain language; the raw error (SQL, stack, cause) goes to the server log only. */
 function friendlyAuthError(err: unknown): { message: string; steps: string[] } {
   const text = err instanceof Error ? `${err.message} ${String(err.cause ?? "")}` : String(err);
-  if (/Failed query|ECONNREFUSED|Connection terminated|database|relation .* does not exist/i.test(text)) {
+  if (
+    /Failed query|ECONNREFUSED|Connection terminated|database|relation .* does not exist/i.test(
+      text,
+    )
+  ) {
     return {
       message: "SwigBot couldn't reach its database, so the login couldn't be saved.",
       steps: [
@@ -27,14 +31,19 @@ function friendlyAuthError(err: unknown): { message: string; steps: string[] } {
   }
   if (/expired|already-used|Unknown or already-used/i.test(text)) {
     return {
-      message: "This login link was already used or has expired. Links are single-use and last 15 minutes.",
+      message:
+        "This login link was already used or has expired. Links are single-use and last 15 minutes.",
       steps: ["Go back to your chat", "Send any message to get a fresh link", "Open it right away"],
     };
   }
   if (/Token exchange failed/i.test(text)) {
     return {
       message: "Swiggy rejected the login code. Codes expire 120 seconds after the OTP screen.",
-      steps: ["Go back to your chat", "Send any message to get a fresh link", "Complete the OTP without pausing"],
+      steps: [
+        "Go back to your chat",
+        "Send any message to get a fresh link",
+        "Complete the OTP without pausing",
+      ],
     };
   }
   return {
@@ -44,14 +53,59 @@ function friendlyAuthError(err: unknown): { message: string; steps: string[] } {
 }
 
 export async function GET(req: NextRequest) {
-  const code = req.nextUrl.searchParams.get("code");
-  const state = req.nextUrl.searchParams.get("state");
+  const params = req.nextUrl.searchParams;
+
+  // Swiggy redirects back with `error` instead of `code` when the user backs
+  // out or /authorize refuses the request; both used to render as "this link
+  // is incomplete", which sent the user to re-copy a link that was fine.
+  const oauthError = params.get("error");
+  if (oauthError) {
+    const description = params.get("error_description");
+    console.error(
+      `[oauth-callback] provider returned error=${oauthError} description=${description ?? "(none)"}`,
+    );
+    if (oauthError === "access_denied") {
+      return page(
+        {
+          variant: "error",
+          title: "Login cancelled",
+          message:
+            "You cancelled the Swiggy login, so nothing was linked. No harm done - you can start over whenever you like.",
+          steps: [
+            "Go back to your chat",
+            "Send any message to get a fresh login link",
+            "Sign in with your Swiggy phone number and OTP",
+          ],
+        },
+        400,
+      );
+    }
+    return page(
+      {
+        variant: "error",
+        title: "Swiggy couldn't complete the login",
+        message: description
+          ? `Swiggy reported: ${description}`
+          : "Swiggy rejected the login request without saying why.",
+        steps: [
+          "Go back to your chat",
+          "Send any message to get a fresh login link",
+          "If it keeps failing, try again in a few minutes",
+        ],
+      },
+      400,
+    );
+  }
+
+  const code = params.get("code");
+  const state = params.get("state");
   if (!code || !state) {
     return page(
       {
         variant: "error",
         title: "This link is incomplete",
-        message: "The login link is missing its security code. It may have been cut off when copied.",
+        message:
+          "The login link is missing its security code. It may have been cut off when copied.",
         steps: [
           "Go back to your chat",
           "Send any message to get a fresh link",

@@ -2,6 +2,7 @@ import "./load-env";
 
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
+import { messageOf } from "../lib/mcp/errors";
 
 const LIMIT = Number(process.argv.find((a) => /^\d+$/.test(a)) ?? 12);
 const FULL = process.argv.includes("--full");
@@ -52,9 +53,7 @@ async function main() {
       }
     } else {
       for (const res of c.results ?? []) {
-        console.log(
-          `${head} RESULT${res.isError ? "(error)" : ""} ${res.content.slice(0, CLIP)}`,
-        );
+        console.log(`${head} RESULT${res.isError ? "(error)" : ""} ${res.content.slice(0, CLIP)}`);
       }
     }
   }
@@ -62,6 +61,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("✗ failed:", err instanceof Error ? err.message : err);
+  console.error("✗ failed:", messageOf(err));
   process.exit(1);
 });

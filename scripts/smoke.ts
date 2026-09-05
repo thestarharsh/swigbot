@@ -2,6 +2,7 @@ import "./load-env";
 
 import { sql } from "drizzle-orm";
 import { db } from "../lib/db";
+import { messageOf } from "../lib/mcp/errors";
 import { getClientId, beginAuth, redirectUri } from "../lib/swiggy-auth";
 import { ensureUser } from "../lib/agent";
 
@@ -26,6 +27,6 @@ async function main() {
 main()
   .then(() => process.exit(0))
   .catch((err) => {
-    console.error("✗ smoke test failed:", err instanceof Error ? err.message : err);
+    console.error("✗ smoke test failed:", messageOf(err));
     process.exit(1);
   });

@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  SwiggyAuthError,
-  isAuthError,
-  isBadInputError,
-  isRetryableError,
-} from "../lib/mcp/errors";
+import { SwiggyAuthError, isAuthError, isRetryableError, messageOf } from "../lib/mcp/errors";
 
 // Problem 16: v1 has no symbolic error codes - classification is by HTTP
 // status, JSON-RPC code, and message text.
@@ -31,7 +26,11 @@ describe("error classification", () => {
     expect(isRetryableError(new Error("HTTP 401 Unauthorized"))).toBe(false);
     expect(isRetryableError(new Error("Invalid addressId"))).toBe(false);
     expect(isRetryableError(new Error("item out of stock"))).toBe(false);
-    expect(isBadInputError(new Error("Invalid addressId"))).toBe(true);
-    expect(isBadInputError(new Error("Missing restaurantId"))).toBe(true);
+  });
+
+  it("messageOf reads anything thrown", () => {
+    expect(messageOf(new Error("boom"))).toBe("boom");
+    expect(messageOf("plain string")).toBe("plain string");
+    expect(messageOf(undefined)).toBe("undefined");
   });
 });

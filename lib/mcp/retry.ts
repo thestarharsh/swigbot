@@ -1,6 +1,6 @@
+import { backoff } from "../backoff";
+import { sleep } from "../util/sleep";
 import { isRetryableError } from "./errors";
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
  * Backoff per Swiggy's ship-to-production doc: 500ms doubling to 8s with
@@ -9,22 +9,24 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  */
 export async function withRetry<T>(
   fn: () => Promise<T>,
-  { maxAttempts = 5, wallClockMs = 30_000 }: { maxAttempts?: number; wallClockMs?: number } = {},
+  {
+    maxAttempts = 5,
+    wallClockMs = 30_000,
+    sleep: sleepFn,
+  }: {
+    maxAttempts?: number;
+    wallClockMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<T> {
-  const start = Date.now();
-  let attempt = 0;
-  for (;;) {
-    try {
-      return await fn();
-    } catch (err) {
-      attempt++;
-      if (attempt >= maxAttempts || !isRetryableError(err)) throw err;
-      const base = Math.min(500 * 2 ** (attempt - 1), 8000);
-      const delay = base + Math.random() * base * 0.3;
-      if (Date.now() + delay - start > wallClockMs) throw err;
-      await sleep(delay);
-    }
-  }
+  return backoff(fn, {
+    maxAttempts,
+    wallClockMs,
+    baseDelayMs: 500,
+    maxDelayMs: 8_000,
+    isRetryable: isRetryableError,
+    sleep: sleepFn,
+  });
 }
 
 export { sleep };

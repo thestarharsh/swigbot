@@ -1,5 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import { messageOf } from "../mcp/errors";
+import { sleep } from "../util/sleep";
 import * as schema from "./schema";
 
 const connectionString = process.env.DATABASE_URL;
@@ -41,8 +43,6 @@ export function isTransientDbError(err: unknown): boolean {
   return err instanceof Error && TRANSIENT.test(`${err.message} ${String(err.cause ?? "")}`);
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
 /**
  * Retries queries whose connection died, so a suspended compute costs a retry
  * rather than the whole turn. Every write here is an upsert or an append-only
@@ -57,11 +57,7 @@ function withQueryRetry(pool: Pool): Pool {
         return await (original as (...a: unknown[]) => Promise<unknown>)(...args);
       } catch (err) {
         if (attempt >= 3 || !isTransientDbError(err)) throw err;
-        console.warn(
-          `[db] transient connection failure, retry ${attempt}/2: ${
-            err instanceof Error ? err.message : err
-          }`,
-        );
+        console.warn(`[db] transient connection failure, retry ${attempt}/2: ${messageOf(err)}`);
         await sleep(attempt * 500);
       }
     }
