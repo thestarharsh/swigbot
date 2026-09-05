@@ -95,6 +95,33 @@ describe("beginAuth", () => {
     const expected = crypto.createHash("sha256").update(inserted.codeVerifier).digest("base64url");
     expect(url.searchParams.get("code_challenge")).toBe(expected);
   });
+
+  it("re-registers with the union of redirect URIs, so prod and local dev stop overwriting each other", async () => {
+    // One database row serves both environments; replacing the list would
+    // make every alternate login re-register.
+    state.rows.oauth_client = [CLIENT];
+    process.env.SWIGGY_REDIRECT_BASE_URL = "https://swigbot.vercel.app";
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ client_id: "cli_2" }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const url = new URL(await beginAuth(7));
+
+    expect(url.searchParams.get("client_id")).toBe("cli_2");
+    expect(url.searchParams.get("redirect_uri")).toBe(
+      "https://swigbot.vercel.app/api/auth/callback/swiggy",
+    );
+    const init = (fetchMock.mock.calls[0] as unknown[])[1] as { body: string };
+    const body = JSON.parse(init.body) as { redirect_uris: string[] };
+    expect(body.redirect_uris).toEqual([
+      "http://localhost:3000/api/auth/callback/swiggy",
+      "https://swigbot.vercel.app/api/auth/callback/swiggy",
+    ]);
+    const updated = find("update", "oauth_client")!.args[0][0] as { redirectUris: string[] };
+    expect(updated.redirectUris).toEqual(body.redirect_uris);
+  });
 });
 
 describe("handleCallback", () => {

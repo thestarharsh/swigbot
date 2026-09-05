@@ -16,20 +16,24 @@ const AUTH_SESSION_TTL_MS = 15 * 60 * 1000;
 
 /**
  * Dynamic Client Registration (RFC 7591). Swiggy has no static client id or
- * secret; we register once, persist the client_id, and re-register whenever
- * the redirect URI changes (e.g. a new ngrok URL).
+ * secret; we register once, persist the client_id, and re-register whenever a
+ * redirect URI appears that the registration does not yet carry. The list
+ * accumulates rather than being replaced: production (Vercel) and local dev
+ * (localhost) share this one database row, and each replacing the other's URI
+ * would make every alternate login re-register.
  */
 export async function getClientId(): Promise<string> {
   const uri = redirectUri();
   const [existing] = await db.select().from(schema.oauthClient).limit(1);
   if (existing && existing.redirectUris.includes(uri)) return existing.clientId;
+  const uris = [...new Set([...(existing?.redirectUris ?? []), uri])];
 
   const res = await fetch(`${swiggyBaseUrl()}/auth/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       client_name: "swigbot",
-      redirect_uris: [uri],
+      redirect_uris: uris,
       grant_types: ["authorization_code"],
       response_types: ["code"],
       token_endpoint_auth_method: "none",
@@ -44,12 +48,12 @@ export async function getClientId(): Promise<string> {
   if (existing) {
     await db
       .update(schema.oauthClient)
-      .set({ clientId: body.client_id, redirectUris: [uri], raw: body })
+      .set({ clientId: body.client_id, redirectUris: uris, raw: body })
       .where(eq(schema.oauthClient.id, existing.id));
   } else {
     await db.insert(schema.oauthClient).values({
       clientId: body.client_id,
-      redirectUris: [uri],
+      redirectUris: uris,
       raw: body,
     });
   }
