@@ -46,7 +46,9 @@ const results = await client.callTool({
 });
 ```
 
-Each product returns one or more `variants` with their own `spinId` (the SKU-level identifier). You add variants to the cart, not the parent product.
+Each product returns one or more `variations` with their own `spinId` (the SKU-level identifier). You add variations to the cart, not the parent product.
+
+The response may also include a `similarProducts` array — related items shown when the catalogue API finds relevant alternatives. Present these in a separate "Similar Items" section below the main results.
 
 ## Step 3 - Build the cart
 
@@ -81,6 +83,8 @@ const order = await client.callTool({
 });
 ```
 
+This uses COD. To take payment with UPI, call [`get_payment_options`](/docs/reference/instamart/get_payment_options.md) first and pass the picked method into `checkout` (`paymentMethod:"UPI"` + `intentApp`/`generateUPIQR`) - see the [Pay with UPI](/docs/build/recipes/pay-with-upi.md) recipe.
+
 Same non-idempotency rule as Food: if `checkout` 5xxs, check [`get_orders`](/docs/reference/instamart/get_orders.md) before retrying.
 
 ## Step 6 - Track
@@ -99,7 +103,7 @@ Poll no faster than every 10s.
 
 > **Note**
 >
-> You help users shop on Swiggy Instamart. Start by resolving the user's saved address. Offer `your_go_to_items` for quick reorders; use `search_products` for new queries. Always confirm the cart and total before `checkout`. COD-only in v1.
+> You help users shop on Swiggy Instamart. Start by resolving the user's saved address. Offer `your_go_to_items` for quick reorders; use `search_products` for new queries. Always confirm the cart and total before `checkout`. When the user is ready to pay, call `get_payment_options` — both UPI (scan-QR / app intent) and Cash are supported; Cash is the fallback when UPI isn't available.
 
 ## Common errors
 

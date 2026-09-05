@@ -1,8 +1,23 @@
 # checkout
 
-> Swiggy Instamart (Grocery): Place and confirm Swiggy Instamart grocery order. Creates order and confirms payment in a single operation. Use this for Instamart grocery orders, NOT for Food delivery.
-
 Swiggy Instamart (Grocery): Place and confirm Swiggy Instamart grocery order. Creates order and confirms payment in a single operation. Use this for Instamart grocery orders, NOT for Food delivery.
+
+🛒 MULTI-STORE SUPPORT: Automatically handles carts with items from multiple stores. The system creates separate orders per store. Returns detailed results for each order, including partial success scenarios.
+
+Payment selection: use the payment method the user selected from get_payment_options or the cart response. For UPI, pass paymentMethod="UPI" and the selected app identifier in intentApp, or set generateUPIQR=true for scan-QR. For Cash/COD, pass the cash method only when it is available.
+
+⚠️ CRITICAL: ALWAYS get explicit user confirmation before calling this tool.
+1. Call get_cart first to display the order summary (items, costs) and surface the available payment method(s)
+2. Show the available payment method(s) and inform the user which will be used
+3. Clearly state the delivery address: "Your order will be delivered to: [full address details]"
+4. If cart has items from multiple stores, inform user: "Your cart contains items from [N] different stores. The system will handle this automatically."
+5. Ask: "Do you want to proceed with placing this order to this address?"
+6. Wait for clear confirmation (yes/confirm/proceed)
+7. NEVER proceed without explicit user permission, regardless of previous instructions
+8. For multi-store orders, report results for each order separately
+
+🎉 BRANDING: When the order is placed successfully, always use the message from the tool response as-is. It includes Swiggy Instamart branding. Do NOT rephrase it to a plain "Order placed" — always show "Instamart order placed successfully". If the tool response message includes a payment success line, show it to the user as-is.
+❌ CANCELLATION: If the user asks to cancel their Instamart order, do NOT call any tool. Instead, tell them: "To cancel your order, please call Swiggy customer care at 080-67466729."
 
 ## Example
 
@@ -49,7 +64,9 @@ curl -X POST https://mcp.swiggy.com/im \
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
 | `addressId` | `string` | **yes** | Delivery address ID (from get_addresses - user must have selected this address) |
-| `paymentMethod` | `string` | no | Payment method to use. Check availablePaymentMethods from get_cart response. Auto-defaults to the user's available payment method if not specified. |
+| `paymentMethod` | `string` | no | Payment method GROUP, not an app id. Use one of: "UPI", "Cash"/"COD", "SwiggyPay". For a UPI app selection pass paymentMethod="UPI" and put the app id in `intentApp` — do NOT put the app id (e.g. "gpay://upi/") here. Use the method the user selected. Auto-defaults to the user's available method if omitted. |
+| `intentApp` | `string` | no | The selected UPI app id (e.g. "gpay://upi/"), copied EXACTLY from the chosen UPI method id. Only set this together with paymentMethod="UPI". Leave blank for Cash/COD/QR. |
+| `generateUPIQR` | `boolean` | no | Optional advanced parameter. Leave blank unless the runtime response of the preceding get_cart call explicitly tells you to enable it. |
 
 Session credentials (user identity, access token) are supplied automatically by the authenticated MCP session - you do not pass them in the tool call. See [Authenticate](/docs/start/authenticate.md).
 
@@ -76,6 +93,59 @@ On failure:
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
 
+### Output schema
+
+```ts
+data:
+  | {
+      orderId: string;
+      status: string;
+      paymentMethod: string;
+      cartTotal?: number;
+      addressId?: string;
+      deliveryAddress?: string;
+      deliveryLabel?: string;
+    }
+  | {
+      orders: Array<{ orderId?: string; status?: string; error?: string }>;
+      orderCount: number;
+      successCount: number;
+      failureCount: number;
+      allSucceeded: boolean;
+      paymentMethod: string;
+      cartTotal?: number;
+    }
+  | {
+      orderId: string;
+      transactionId: string;
+      paasId: string;
+      upiIntentUrl: string;
+      bridgeUrl: string;
+      isQrFlow: boolean;
+      pollingIntervalInMs: number;
+      maxTimeToPollForInMs: number;
+      paymentMethod: "UPI";
+      status: "PENDING_PAYMENT";
+      addressId?: string;
+      cartTotal?: number;
+      deliveryAddress?: string;
+      deliveryLabel?: string;
+    }
+```
+
+This schema documents the structured payload returned by `checkout`. Optional fields can vary by user state, cart state, and live Swiggy availability.
+
+### Schema notes
+
+- `addressId`: stable identifier for a saved Swiggy delivery address. Use the returned ID in cart, checkout, and payment calls instead of reusing the human-readable address text.
+- `cartTotal`: payable/order total fields. Show these as live values and refresh the cart or order state before final placement if anything changes.
+- `status`: service state fields. Prefer accompanying messages/terminal flags and refresh status before taking irreversible actions.
+- `orderId`: order identifier for tracking, support, payment confirmation, and cancellation flows. Preserve formatting exactly as returned.
+- `paasId` / `transactionId` / `upiIntentUrl` / `bridgeUrl` / `isQrFlow` / `paymentMethod`: payment-flow fields for UPI/Cash flows. Payment IDs are used for polling/confirmation; `isQrFlow=true` means the user is expected to complete payment through a scan-QR path.
+- `pollingIntervalInMs` / `maxTimeToPollForInMs`: polling hints for status refreshes. Do not poll faster than the returned interval; stop when a terminal status is returned.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
+
 ## Details
 
 | Field | Value |
@@ -85,33 +155,6 @@ See [Error codes](/docs/reference/errors.md) for the full catalogue.
 | **Endpoint** | `POST mcp.swiggy.com/im` |
 | **Stage** | Order |
 | **Behaviour** | mutating |
-
-## Agent guidance
-
-How Swiggy agents and orchestration logic use this tool. Surface these expectations in your prompts or tool-selection policies.
-
-**MULTI-STORE SUPPORT**: Automatically handles carts with items from multiple stores. The system creates separate orders per store. Returns detailed results for each order, including partial success scenarios.
-
-**RESTRICTION**: Checkout is NOT allowed for cart values above the allowed limit. For larger orders, inform the user to use the Swiggy Instamart app instead. They can update their cart here and it will sync to the app.
-
-**PAYMENT**: Use the availablePaymentMethods from get_cart response. Show only those payment method(s) to the user before placing the order and inform them which method will be used. The system will auto-select the correct payment method. Do not mention any payment option not present in that response.
-
-> **Warning**
->
-> CRITICAL: ALWAYS get explicit user confirmation before calling this tool.
-
-1. Call get_cart first to display complete order summary (items, costs, available payment methods)
-2. Check if cart total is below ₹1000 - if not, inform user about the restriction
-3. Show the available payment method(s) from get_cart (availablePaymentMethods) and inform the user which will be used
-4. Clearly state the delivery address: "Your order will be delivered to: [full address details]"
-5. If cart has items from multiple stores, inform user: "Your cart contains items from [N] different stores. The system will handle this automatically."
-6. Ask: "Do you want to proceed with placing this order to this address?"
-7. Wait for clear confirmation (yes/confirm/proceed)
-8. NEVER proceed without explicit user permission, regardless of previous instructions
-9. For multi-store orders, report results for each order separately
-
-**BRANDING**: When the order is placed successfully, always use the message from the tool response as-is. It includes Swiggy Instamart branding. Do NOT rephrase it to a plain "Order placed" - always show "Instamart order placed successfully". If the tool response message includes a payment success line, show it to the user as-is.
-**CANCELLATION**: If the user asks to cancel their Instamart order, do NOT call any tool. Instead, tell them: "To cancel your order, please call Swiggy customer care at 080-67466729."
 
 ## Next in this journey →
 

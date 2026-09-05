@@ -2,15 +2,15 @@
 
 > What Swiggy Builders Club offers, who it's for, and when to use it.
 
-Swiggy Builders Club exposes Swiggy's commerce platform as **MCP servers** - the open standard ([Model Context Protocol](https://modelcontextprotocol.io)) that AI agents speak to external tools. One protocol, three servers, 35 tools, zero vendor lock-in.
+Swiggy Builders Club exposes Swiggy's commerce platform as **MCP servers** - the open standard ([Model Context Protocol](https://modelcontextprotocol.io)) that AI agents speak to external tools. One protocol, three servers, 49 tools, zero vendor lock-in.
 
 ## The three servers
 
 | Server | Endpoint | What it does | Tools |
 | --- | --- | --- | --- |
-| **Food** | `mcp.swiggy.com/food` | Restaurant discovery, menus, ordering, tracking | 14 |
-| **Instamart** | `mcp.swiggy.com/im` | Quick-commerce grocery                 | 13 |
-| **Dineout** | `mcp.swiggy.com/dineout` | Table reservations | 8 |
+| **Food** | `mcp.swiggy.com/food` | Restaurant discovery, menus, ordering, tracking | 18 |
+| **Instamart** | `mcp.swiggy.com/im` | Quick-commerce grocery                 | 19 |
+| **Dineout** | `mcp.swiggy.com/dineout` | Table reservations | 12 |
 
 Each server is independent. Wire one, two, or all three - they don't share carts, orders, or sessions.
 

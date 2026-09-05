@@ -226,6 +226,9 @@ async function runLockedTurn(
   // Survives the whole turn: the repeat-breaker only catches identical
   // arguments, so it cannot stop a second order placed with a tweaked payload.
   const completed = new Set<string>();
+  // Keyed by orderId rather than tool name: confirm_order is idempotent, but
+  // one order only ever needs confirming once in a turn.
+  const confirmedOrders = new Set<string>();
   const userMessage: ChatMessage = { role: "user", content: text };
   messages.push(userMessage);
   await d.persist(user.id, userMessage);
@@ -272,6 +275,7 @@ async function runLockedTurn(
         const outcome = await d.executeTool(session, user.id, call.name, call.input, {
           userText: text,
           completed,
+          confirmedOrders,
         });
         results.push({
           toolCallId: call.id,

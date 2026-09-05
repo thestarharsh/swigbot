@@ -7,19 +7,34 @@ import type { ServerKey, SwiggyMcpSession, ToolCallOutcome } from "./session";
 /**
  * Hard guardrails enforced in code, so they hold when the model ignores the
  * prompt. Swiggy publishes no response schemas, so numeric checks match keys
- * tolerantly and only block on a confident violation.
+ * tolerantly and only block on a confident violation. What this file enforces:
+ * the consent gate on irreversible and destructive calls, the one-success-per-
+ * turn placement latch, the one-per-order-per-turn `confirm_order` latch,
+ * required-argument validation, the ₹1000 food cap and ₹99 Instamart minimum,
+ * check-then-retry instead of blind placement retries, a 10s cooldown on the
+ * rate-limited reads (tracking, delivery status, payment status), the
+ * phantom-coupon scrub, the paid-Dineout-slot filter, the PENDING_PAYMENT
+ * note, invented `create_address` coordinates, and the tool-call log.
  */
 
 const FOOD_CART_CAP_RUPEES = 1000;
 const INSTAMART_MIN_RUPEES = 99;
-const TRACK_COOLDOWN_MS = 10_000;
+const READ_COOLDOWN_MS = 10_000;
 const PLACEMENT_CHECK_DELAY_MS = 2_500;
 
 /** Spends money or reserves a table: never retried blindly, never unconfirmed. */
 const IRREVERSIBLE = new Set(["place_food_order", "checkout", "book_table"]);
 
-/** Destructive too, but nothing is placed: gated on consent, never latched. */
-const CONFIRM_REQUIRED = new Set([...IRREVERSIBLE, "delete_address"]);
+/**
+ * Destructive too, but nothing is placed: gated on consent, never latched.
+ * `confirm_order` is deliberately absent from both sets - the user already
+ * consented at placement and then paid with their own hands, and the tool is
+ * documented idempotent, so it is retriable and needs no second yes.
+ */
+const CONFIRM_REQUIRED = new Set([...IRREVERSIBLE, "delete_address", "cancel_booking"]);
+
+/** The five values Swiggy's create_address schema accepts. */
+const ADDRESS_CATEGORIES = ["HOME", "WORK", "OFFICE", "FRIENDS_AND_FAMILY", "OTHER"];
 
 /**
  * Consulted when a placement fails ambiguously. `book_table` is deliberately
@@ -31,7 +46,18 @@ const PLACEMENT_CHECK_TOOL: Record<string, string> = {
   checkout: "get_orders",
 };
 
-const TRACK_TOOLS = new Set(["track_food_order", "track_order"]);
+/**
+ * Reads whose value changes slowly and whose backend does not want a loop:
+ * ETAs refresh every ~10s, and `check_payment_status` is a ~19s long-poll
+ * against Swiggy's payment cache that the docs ask agents not to hammer.
+ */
+const RATE_LIMITED_READS = new Set([
+  "track_food_order",
+  "track_order",
+  "check_payment_status",
+  "get_food_delivery_status",
+  "get_delivery_status",
+]);
 
 /** Swiggy's own domain names, which differ from our server keys. */
 const REPORT_DOMAIN: Record<ServerKey, string> = {
@@ -40,7 +66,7 @@ const REPORT_DOMAIN: Record<ServerKey, string> = {
   dineout: "dineout",
 };
 
-const lastTrackAt = new Map<string, number>();
+const lastReadAt = new Map<string, number>();
 
 /** What the user said this turn, for the confirmation gate. */
 export interface TurnContext {
@@ -51,6 +77,12 @@ export interface TurnContext {
    * without this a second `place_food_order` spends money again.
    */
   completed?: Set<string>;
+  /**
+   * Order ids `confirm_order` has already been called for this turn. The tool
+   * is idempotent, so a repeat is harmless to Swiggy - but it burns an
+   * iteration and tempts the model to announce an outcome twice.
+   */
+  confirmedOrders?: Set<string>;
 }
 
 export async function executeGuardedTool(
@@ -117,13 +149,38 @@ async function runGuarded(
     if (server) args = { ...args, domain: REPORT_DOMAIN[server] };
   }
 
-  if (TRACK_TOOLS.has(name)) {
+  if (name === "create_address") {
+    const violation = addressPrecheck(args, turn);
+    if (typeof violation === "string") return blocked(violation);
+    args = violation;
+  }
+
+  if (RATE_LIMITED_READS.has(name)) {
     const since = await msSinceLastTrack(userId, name);
-    if (since != null && since < TRACK_COOLDOWN_MS) {
+    if (since != null && since < READ_COOLDOWN_MS) {
       return blocked(
-        `Tracking was checked ${Math.round(since / 1000)}s ago. ETAs update every ~10s - ` +
-          `give the user the last known status and suggest asking again in a minute. ` +
-          `Do not call this tool again yet.`,
+        `"${name}" was checked ${Math.round(since / 1000)}s ago and may be called at most once ` +
+          `every ${READ_COOLDOWN_MS / 1000}s - delivery ETAs refresh on that cadence, and the ` +
+          `payment status is a long poll that must not be looped. Tell the user the last known ` +
+          `status and ask them to try again in a minute. Do not call this tool again yet.`,
+      );
+    }
+  }
+
+  if (name === "confirm_order") {
+    const orderId = typeof args.orderId === "string" ? args.orderId.trim() : "";
+    if (!orderId) {
+      return blocked(
+        `Call rejected before it was sent: "confirm_order" needs the orderId from the ` +
+          `place-order response. Re-read that result - it carries orderId and paasId - and ` +
+          `call again. Never invent an order id.`,
+      );
+    }
+    if (turn?.confirmedOrders?.has(orderId)) {
+      return blocked(
+        `BLOCKED - confirm_order has already run for order ${orderId} in this turn. It is ` +
+          `idempotent, so a second call adds nothing: the earlier result already holds the ` +
+          `outcome. Read that result and tell the user, instead of calling this tool again.`,
       );
     }
   }
@@ -139,10 +196,14 @@ async function runGuarded(
   if (CONFIRM_REQUIRED.has(name) && !isConfirmation(turn?.userText)) {
     const stake = IRREVERSIBLE.has(name)
       ? "spends real money"
-      : "permanently deletes a saved address";
+      : name === "cancel_booking"
+        ? "cancels a confirmed table booking"
+        : "permanently deletes a saved address";
     const summary = IRREVERSIBLE.has(name)
       ? "items, total, address, payment method"
-      : "which address, in full";
+      : name === "cancel_booking"
+        ? "which booking: restaurant, date, time, guests"
+        : "which address, in full";
     return blocked(
       `BLOCKED - the user has not confirmed. "${name}" ${stake} and may only run ` +
         `immediately after the user explicitly agrees. Show the final summary (${summary}) ` +
@@ -160,8 +221,13 @@ async function runGuarded(
     const outcome = postProcess(name, await withRetry(() => session.callTool(name, args)));
     // Started only by a call that actually returned a status: a failed track
     // told the user nothing, so it must not cost them the next 10 seconds.
-    if (TRACK_TOOLS.has(name) && !outcome.isError) {
-      lastTrackAt.set(`${userId}:${name}`, Date.now());
+    if (RATE_LIMITED_READS.has(name) && !outcome.isError) {
+      lastReadAt.set(`${userId}:${name}`, Date.now());
+    }
+    // Latched only once Swiggy answered: a 5xx that exhausted the retries has
+    // told the model nothing, so the documented retry must stay open.
+    if (name === "confirm_order" && !outcome.isError && typeof args.orderId === "string") {
+      turn?.confirmedOrders?.add(args.orderId.trim());
     }
     return outcome;
   }
@@ -170,7 +236,9 @@ async function runGuarded(
     const outcome = postProcess(name, await session.callTool(name, args));
     // Latched on success only. A domain error means the order did not go
     // through, and the ambiguous failure below is still owed the single retry
-    // the ship-to-production contract allows.
+    // the ship-to-production contract allows. A PENDING_PAYMENT result counts
+    // as a success here: the order exists server-side, waiting only on the
+    // user's payment, so placing again would reserve a second one.
     if (!outcome.isError) turn?.completed?.add(name);
     return outcome;
   } catch (err) {
@@ -209,10 +277,10 @@ async function runGuarded(
  * memory rather than blocking a legitimate check.
  */
 async function msSinceLastTrack(userId: number, tool: string): Promise<number | null> {
-  const remembered = lastTrackAt.get(`${userId}:${tool}`);
+  const remembered = lastReadAt.get(`${userId}:${tool}`);
   const local = remembered == null ? null : Date.now() - remembered;
   // Already inside the cooldown on this instance: nothing older can change that.
-  if (local != null && local < TRACK_COOLDOWN_MS) return local;
+  if (local != null && local < READ_COOLDOWN_MS) return local;
 
   try {
     const { rows } = await db.execute(sql`
@@ -369,10 +437,25 @@ async function placementPrecheck(
   }
 }
 
+/** Cart-shaped responses that can carry a coupon Swiggy has not really applied. */
+const COUPON_BEARING = new Set([
+  "get_food_cart",
+  "update_food_cart",
+  "apply_food_coupon",
+  "get_cart",
+  "update_cart",
+  "apply_coupon",
+]);
+
+const PAYMENT_NOTE =
+  "This order is NOT placed yet - payment is pending. Send the user the bridgeUrl below as a " +
+  "bare link, say the order is reserved but not placed until they pay, and ask them to reply " +
+  "'paid' when done. Do not call check_payment_status in this turn.";
+
 function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
   if (outcome.isError) return outcome;
 
-  if (name === "get_food_cart" || name === "update_food_cart" || name === "apply_food_coupon") {
+  if (COUPON_BEARING.has(name)) {
     const parsed = tryParseJson(outcome.text);
     if (parsed && scrubPhantomCoupon(parsed)) {
       return { ...outcome, text: JSON.stringify(parsed) };
@@ -387,11 +470,79 @@ function postProcess(name: string, outcome: ToolCallOutcome): ToolCallOutcome {
     }
   }
 
+  // A UPI placement returns success with the order in PENDING_PAYMENT, which
+  // reads exactly like a placed order unless the model looks at `status`.
+  if (IRREVERSIBLE.has(name)) {
+    const parsed = tryParseJson(outcome.text);
+    if (isRecord(parsed) && isPendingPayment(parsed)) {
+      return { ...outcome, text: JSON.stringify({ ...parsed, _payment_note: PAYMENT_NOTE }) };
+    }
+  }
+
   // Coupons are deliberately not filtered by payment method. The spec promised
   // COD-only, but live orders refuse cash and settle over UPI, so filtering out
   // online-payment coupons removed the only ones that could ever apply.
 
   return outcome;
+}
+
+/**
+ * True when a placement result describes an order awaiting UPI payment. Food
+ * carries both `status` and `normalizedStatus`; Instamart and Dineout only
+ * `status`, so the normalized form is accepted only next to a `paasId`.
+ */
+export function isPendingPayment(value: unknown): boolean {
+  let pending = false;
+  const walk = (node: unknown): void => {
+    if (pending) return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (!isRecord(node)) return;
+    if (node.status === "PENDING_PAYMENT") pending = true;
+    else if (node.normalizedStatus === "pending" && node.paasId != null) pending = true;
+    else Object.values(node).forEach(walk);
+  };
+  walk(value);
+  return pending;
+}
+
+/**
+ * Validates a create_address call and returns the args to send, or an error
+ * string. Coordinates are dropped unless the user typed a pin themselves: the
+ * reference page's example is 12.9716, 77.5946, which is exactly what a model
+ * pastes when it believes the fields are required, and a wrong pin misdelivers
+ * a real order. Omitted, the server geocodes from the address text.
+ */
+function addressPrecheck(
+  args: Record<string, unknown>,
+  turn: TurnContext | undefined,
+): Record<string, unknown> | string {
+  const category = args.addressCategory;
+  if (category != null && !ADDRESS_CATEGORIES.includes(String(category))) {
+    return (
+      `Call rejected before it was sent: addressCategory "${String(category)}" is not one of ` +
+      `${ADDRESS_CATEGORIES.join(", ")}. Ask the user whether it is Home, Work or Other, and ` +
+      `call again with one of those exact values.`
+    );
+  }
+
+  if (!("latitude" in args) && !("longitude" in args)) return args;
+  if (hasCoordinatePair(turn?.userText)) return args;
+  const { latitude: _lat, longitude: _lng, ...rest } = args;
+  return rest;
+}
+
+/** Two decimal numbers within ±90 / ±180, separated by a comma or whitespace. */
+const COORDINATE_PAIR = /(-?\d{1,3}\.\d+)\s*[,\s]\s*(-?\d{1,3}\.\d+)/g;
+
+export function hasCoordinatePair(text: string | undefined): boolean {
+  if (!text) return false;
+  for (const [, lat, lng] of text.matchAll(COORDINATE_PAIR)) {
+    if (Math.abs(Number(lat)) <= 90 && Math.abs(Number(lng)) <= 180) return true;
+  }
+  return false;
 }
 
 export function tryParseJson(text: string): unknown | null {

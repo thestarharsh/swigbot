@@ -54,13 +54,12 @@ Session credentials (user identity, access token) are supplied automatically by 
 
 ## Response
 
-All Swiggy MCP tools return:
+Success:
 
 ```json
 {
   "success": true,
-  "data": { /* tool-specific payload */ },
-  "message": "optional human-readable message"
+  "message": "Address deleted successfully"
 }
 ```
 
@@ -74,6 +73,19 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: {
+  statusCode: number;
+  statusMessage: string;
+}
+```
+
+This schema documents the structured payload returned by `delete_address`. Prefer the accompanying status message when confirming the result of this irreversible action.
+
+> **Generally available:** As of Aug 2026, `delete_address` is available to every authenticated Swiggy user — no whitelist or feature flag.
 
 ## Details
 

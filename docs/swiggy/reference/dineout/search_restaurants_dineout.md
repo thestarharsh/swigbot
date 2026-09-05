@@ -1,8 +1,29 @@
 # search_restaurants_dineout
 
-> Swiggy Dineout: Search restaurants for TABLE BOOKING/RESERVATIONS. Use when user wants to GO OUT and book a table. NOT for food delivery. Returns rich results: cuisines, ratings with count, costForTw...
+Swiggy Dineout (Reservations): find restaurants to BOOK A TABLE at. Use when the user wants to go out and eat. NOT for food delivery or grocery orders. Returns cuisines, rating, cost for two, distance, highlights, offers and bookable deals.
 
-Swiggy Dineout: Search restaurants for TABLE BOOKING/RESERVATIONS. Use when user wants to GO OUT and book a table. NOT for food delivery. Returns rich results: cuisines, ratings with count, costForTwo, distance, highlights (valet parking, live music, etc.), offers, bank offers, and available deals.
+QUERY - pass the single thing the user is looking for, not their sentence:
+- a restaurant or chain name: "Toit", "Social", "Ironhill"
+- a cuisine: "Italian", "Biryani", "North Indian"
+- an area or landmark: "Indiranagar", "Phoenix Mall of Asia"
+- a kind of place: "cafe", "pub", "brewery", "lounge"
+- a vibe or amenity: "rooftop", "buffet", "live music", "pet friendly", "outdoor seating"
+The search resolves what the term means on its own. Send the term only: "best rooftop places in Koramangala" becomes query="rooftop" with Koramangala coordinates. For a dish, search the cuisine that serves it ("dosa" becomes "South Indian"). Misspellings are tolerated.
+
+LOCATION (required) - one of:
+1. "near my home", "near my office", "near me" -&gt; call get_saved_locations first, then pass the chosen addressId.
+2. A named city or area -&gt; pass its latitude/longitude. Bangalore 12.9716, 77.5946 | Koramangala 12.9352, 77.6245 | Indiranagar 12.9784, 77.6408 | Mumbai 19.0760, 72.8777 | Delhi 28.6139, 77.2090.
+Coordinates must match the place the user asked about. If you do not know them, ask the user rather than guessing a different city.
+
+RESULTS - returns up to `limit` restaurants (default 10). If more matched, the message says so; call again with `offset` to show the next set. An empty result means nothing matched: tell the user and offer a different term. Never present unrelated restaurants as matches.
+
+EXAMPLES:
+- "italian place in bangalore" -&gt; query="Italian", lat=12.9716, lng=77.5946
+- "somewhere in indiranagar" -&gt; query="Indiranagar", lat=12.9784, lng=77.6408
+- "rooftop bar for tonight" -&gt; query="rooftop" with the user's city coordinates
+- "is there a Toit near me" -&gt; get_saved_locations first, then query="Toit" with the addressId
+
+After showing results, let the user pick a restaurant. Do NOT automatically call get_restaurant_details or get_available_slots.
 
 ## Example
 
@@ -48,11 +69,13 @@ curl -X POST https://mcp.swiggy.com/dineout \
 
 | Parameter | Type | Required | Description |
 | --- | --- | --- | --- |
-| `query` | `string` | **yes** | Search query - restaurant name, cuisine type (Italian, Chinese, Indian), locality/area (Koramangala, Indiranagar), or descriptive terms (romantic, rooftop). Do NOT include location/city in query. |
-| `entityType` | `undefined` | no | Search filter type. "locality" for area search (Indiranagar, Koramangala). "CUISINE" for cuisine search (Italian, Chinese, Biryani). "RESTAURANT_CATEGORY" for category search (cafe, pub, bar, brewery, lounge, buffet). Omit for restaurant name searches. |
-| `addressId` | `string` | no | Address ID from get_saved_locations. Coordinates are resolved server-side. Use this instead of latitude/longitude when searching near a saved address. |
+| `query` | `string` | **yes** | What to search for: a restaurant name, cuisine, area, kind of place (cafe, pub, brewery), or vibe (rooftop, buffet, live music). One term, not a sentence, and no location words when latitude/longitude already cover the location. |
+| `entityType` | `"locality" \| "CUISINE" \| "RESTAURANT_CATEGORY" \| "ambience_tags"` | no | Rarely needed. The search already works out whether the query is a cuisine, area, category or vibe. Set this only to force a specific interpretation of an ambiguous term. |
+| `addressId` | `string` | no | Address ID from get_saved_locations. Coordinates are resolved automatically. Use this instead of latitude/longitude when searching near a saved address. |
 | `latitude` | `number` | no | Latitude for search. Use for direct city/area searches. Not needed if addressId is provided. |
 | `longitude` | `number` | no | Longitude for search. Use for direct city/area searches. Not needed if addressId is provided. |
+| `limit` | `number` | no | Max restaurants to return. Default 10, max 30. |
+| `offset` | `number` | no | Restaurants to skip. Use the offset given in the previous response to show more of the same search. |
 
 Session credentials (user identity, access token) are supplied automatically by the authenticated MCP session - you do not pass them in the tool call. See [Authenticate](/docs/start/authenticate.md).
 
@@ -79,6 +102,47 @@ On failure:
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
 
+### Output schema
+
+```ts
+data: {
+  restaurants: DineoutRestaurant[];
+  latitude: number;
+  longitude: number;
+  total: number;
+  offset: number;
+  nextOffset?: number;
+}
+
+type DineoutRestaurant = {
+  id: string;
+  name: string;
+  cuisine: string[];
+  locality: string;
+  area: string;
+  rating: { value: string; count: number };
+  costForTwo: string;
+  imageUrl?: string;
+  distance?: string;
+  highlights?: string[];
+  offers?: Array<{ offerTitle: string; offerDescription?: string }>;
+  bankOffers?: Array<{ offerTitle: string }>;
+  vendorHighlights?: Array<{ type: string; text: string }>;
+  availableDeals?: Array<{ dealTitle: string; ticketId?: number }>;
+}
+```
+
+This schema documents the structured payload returned by `search_restaurants_dineout`. Optional fields can vary by user state, cart state, and live Swiggy availability.
+
+### Schema notes
+
+- `nextOffset`: pagination fields. Use them only to fetch or display more results from the same query/list; do not treat offsets as item IDs.
+- `latitude` / `longitude`: coordinates from the selected saved location or restaurant context. Reuse returned values for follow-up slot, tracking, or payment calls; do not infer them from address text.
+- `ticketId`: Dineout slot/deal fields. Copy identifiers from the exact selected slot/deal; do not derive them from display time or restaurant name.
+- `rating` / `costForTwo`: display/ranking signals. Do not use them as stable identifiers for follow-up calls.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
+
 ## Details
 
 | Field | Value |
@@ -88,43 +152,6 @@ See [Error codes](/docs/reference/errors.md) for the full catalogue.
 | **Endpoint** | `POST mcp.swiggy.com/dineout` |
 | **Stage** | Find |
 | **Behaviour** | read-only |
-
-## Agent guidance
-
-How Swiggy agents and orchestration logic use this tool. Surface these expectations in your prompts or tool-selection policies.
-
-**LOCATION **- Provide location using ONE of these methods: 
-1. SAVED ADDRESS: If user says "near my home", "near my office", "my location" → First call get_saved_locations, then pass the chosen addressId here. 
-2. CITY/AREA NAME: If user mentions a place (Bangalore, Koramangala, Mumbai, Indiranagar), use latitude/longitude for that location. Common coordinates: 
-   - Bangalore center: 12.9716, 77.5946 
-   - Koramangala: 12.9352, 77.6245 
-   - Indiranagar: 12.9784, 77.6408 
-   - Mumbai center: 19.0760, 72.8777 
-   - Delhi center: 28.6139, 77.2090
-
-ENTITY TYPE (IMPORTANT): Set entityType to filter search results correctly:
-- Locality/area search (Indiranagar, Koramangala, JP Nagar) → entityType="locality"
-- Cuisine search (Chinese, Italian, Biryani) → entityType="CUISINE"
-- Category search (cafe, pub, bar, brewery, lounge, buffet) → entityType="RESTAURANT_CATEGORY"
-- Restaurant name search (Social, Ironhill, Zaika) → omit entityType
-
-> **Warning**
->
-> Without entityType, locality and cuisine queries return generic nearby results instead of filtered results.
-
-SEARCH BEHAVIOR:
-- With entityType: Returns rich data (cuisines, ratings, costForTwo, highlights, offers)
-- Without entityType: Returns exact name matches but limited data. Call get_restaurant_details for full info on results with source="autosuggest".
-
-**QUERY**: Restaurant name, cuisine type, locality/area name, category, or descriptive terms. Do NOT include location/city in query if already provided via lat/lng.
-
-EXAMPLES: 
-- "Italian in Bangalore" → query="Italian", entityType="CUISINE", lat=12.9716, lng=77.5946 
-- "restaurants in Indiranagar" → query="Indiranagar", entityType="locality", lat=12.9784, lng=77.6408 
-- "cafes in Koramangala" → query="cafe", entityType="RESTAURANT_CATEGORY", lat=12.9352, lng=77.6245 
-- "pubs in Bangalore" → query="pub", entityType="RESTAURANT_CATEGORY", lat=12.9716, lng=77.5946 
-- "Social" → query="Social", no entityType, lat=12.9352, lng=77.6245 
-- "near my home" → First call get_saved_locations, then pass addressId here
 
 ## Next in this journey →
 

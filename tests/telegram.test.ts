@@ -33,3 +33,13 @@ describe("toPlainText", () => {
     expect(toPlainText('```json\n{"a":1}\n```')).toBe('{"a":1}');
   });
 });
+
+describe("toPlainText and payment links", () => {
+  it("leaves a UPI bridge URL with a query string byte-identical", () => {
+    // The bot sends this bare so Telegram auto-links it; a mangled query
+    // string is an unpayable order.
+    const bridge = "https://mcp.swiggy.com/pay/bridge?paasId=paas_42&orderId=ord_1";
+    const out = toPlainText(`Pay here:\n\n${bridge}\n\nReply "paid" when you're done.`);
+    expect(out).toContain(bridge);
+  });
+});

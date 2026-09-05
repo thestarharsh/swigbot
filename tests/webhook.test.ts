@@ -122,6 +122,10 @@ async function drain() {
 }
 
 beforeEach(async () => {
+  // The route sweeps old dedupe rows on 2% of updates, and this mock's delete
+  // clears `claimed` whatever the where-clause, so the sweep would read as a
+  // redelivered update slipping through. Pin the dice.
+  vi.spyOn(Math, "random").mockReturnValue(1);
   state.claimed.clear();
   state.sent.length = 0;
   state.turns.length = 0;
@@ -139,6 +143,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   delete process.env.WEBHOOK_SECRET;
 });
 

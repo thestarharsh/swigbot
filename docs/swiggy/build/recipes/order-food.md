@@ -2,7 +2,7 @@
 
 > The canonical 7-tool Food journey - from address to placed order to delivery tracking.
 
-The full food-ordering journey across Swiggy's Food MCP server. COD payment, ₹1000 cart cap. Pseudo-code in TypeScript; the same sequence works in any framework.
+The full food-ordering journey across Swiggy's Food MCP server. Pays by COD; to take payment with UPI instead, see [Pay with UPI](/docs/build/recipes/pay-with-upi.md). ₹1000 cart cap. Pseudo-code in TypeScript; the same sequence works in any framework.
 
 ## The flow
 
@@ -32,6 +32,8 @@ const addresses = await client.callTool({ name: "get_addresses" });
 const home = addresses.data.find((a) => a.label === "Home") ?? addresses.data[0];
 if (!home) throw new Error("User has no saved addresses; prompt them to add one.");
 ```
+
+If the user has no saved addresses, walk them through [`create_address`](/docs/reference/food/create_address.md) — coordinates are optional; the server geocodes from the address.
 
 [`get_addresses`](/docs/reference/food/get_addresses.md) returns label, addressId, and display text - never raw coordinates.
 
@@ -78,7 +80,8 @@ Cart is tied to a single restaurant. Changing restaurant flushes the cart. Use [
 ```ts
 const coupons = await client.callTool({ name: "fetch_food_coupons" });
 
-// v1 supports COD only - filter coupons that don't require online payment
+// This recipe pays by COD - filter to coupons that don't require online payment
+// (paying by UPI instead? see the Pay-with-UPI recipe; online-payment coupons apply there)
 const codCoupon = coupons.data.find((c) => !c.requiresOnlinePayment);
 
 if (codCoupon) {
@@ -127,13 +130,13 @@ Good system prompt for the agent driving this flow:
 
 > **Note**
 >
-> You help users order food on Swiggy. Always resolve the user's saved address via `get_addresses` before searching. Only recommend restaurants with `availabilityStatus: "OPEN"`. Confirm the cart and total with the user before calling `place_food_order` - that call places a real order. Only COD is supported in v1; filter coupons to those not requiring online payment. Never exceed ₹1000 cart total.
+> You help users order food on Swiggy. Always resolve the user's saved address via `get_addresses` before searching. Only recommend restaurants with `availabilityStatus: "OPEN"`. Confirm the cart and total with the user before calling `place_food_order` - that call places a real order. This recipe pays by COD; filter coupons to those not requiring online payment. (To take UPI payment, follow the Pay-with-UPI recipe instead.) Never exceed ₹1000 cart total.
 
 ## What can go wrong
 
 Until the symbolic error-code registry ships (see [errors](/docs/reference/errors.md)), classify by `error.message` text and HTTP status. Expect:
 
 - **Restaurant closed** between search and order → re-run `search_restaurants`.
-- **Coupon requires online payment** → filter upstream; only COD is supported in v1.
+- **Coupon requires online payment** → not usable on the COD path; filter upstream, or pay with [UPI](/docs/build/recipes/pay-with-upi.md).
 - **Minimum order not met** → prompt user to add items.
 - **Upstream shedding / timeout** → exponential backoff; capacity questions go to [rate-limits](/docs/operate/rate-limits.md).

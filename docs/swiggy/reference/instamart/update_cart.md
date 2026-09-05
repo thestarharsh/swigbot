@@ -1,7 +1,5 @@
 # update_cart
 
-> Swiggy Instamart (Grocery): Update Swiggy Instamart grocery cart with items. Replaces entire cart with the provided items. Use this for Instamart grocery orders, NOT for Food delivery. Authentication...
-
 Swiggy Instamart (Grocery): Update Swiggy Instamart grocery cart with items. Replaces entire cart with the provided items. Use this for Instamart grocery orders, NOT for Food delivery. Authentication is handled automatically. Use addressId from get_addresses.
 
 ## Example
@@ -12,7 +10,7 @@ const result = await client.callTool({
   name: "update_cart",
   arguments: {
     selectedAddressId: "...",
-    items: [{ "spinId": "spin_42", "quantity": 1 }],
+    items: [{ "spinId": "spin_42", "skuId": "sku_88", "quantity": 1 }],
   },
 });
 ```
@@ -23,7 +21,7 @@ result = await session.call_tool(
   "update_cart",
   arguments={
     "selectedAddressId": "...",
-    "items": [{ "spinId": "spin_42", "quantity": 1 }],
+    "items": [{ "spinId": "spin_42", "skuId": "sku_88", "quantity": 1 }],
   },
 )
 ```
@@ -40,7 +38,7 @@ curl -X POST https://mcp.swiggy.com/im \
       "name": "update_cart",
       "arguments": {
     "selectedAddressId": "...",
-    "items": [{ "spinId": "spin_42", "quantity": 1 }]
+    "items": [{ "spinId": "spin_42", "skuId": "sku_88", "quantity": 1 }]
       }
     },
     "id": 1
@@ -78,6 +76,30 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: InstamartCart & {
+  removedOutOfStockItems?: InstamartCartItem[];
+  reducedQuantityItems?: Array<{
+    spinId: string;
+    itemName: string;
+    requestedQuantity: number;
+    cappedQuantity: number;
+    reason?: string;
+  }>;
+}
+```
+
+The base cart shape is the same as `get_cart`.
+
+### Schema notes
+
+- `spinId`: Instamart product/SKU identifiers. Use returned SKU-level IDs from the selected product variation when updating an Instamart cart; product-level IDs identify the broader product family.
+- `reducedQuantityItems`: live availability fields. If an item is out of stock, unserviceable, or quantity-capped, show the returned reason/message and refresh before checkout.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
 
 ## Details
 

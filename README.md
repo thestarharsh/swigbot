@@ -2,7 +2,7 @@
 
 Conversational commerce agent for **Swiggy MCP** (Food, Instamart, Dineout) - order food, groceries, and book tables through natural conversation on **Telegram** or a local **CLI**, with a **BYOK** LLM layer (Anthropic, OpenAI, OpenRouter, Gemini, or any OpenAI-compatible endpoint).
 
-Built against the Swiggy Builders Club v1 spec. The 19 documented failure modes (cart drift, ₹1000 cap, phantom coupons, slot races, non-idempotent placement, …) are handled in the system prompt **and** - for the non-negotiables - enforced in code (`lib/mcp/guardrails.ts`).
+Built against the Swiggy Builders Club v1 spec. The 21 documented failure modes (cart drift, ₹1000 cap, phantom coupons, slot races, non-idempotent placement, unpaid `PENDING_PAYMENT` orders, …) are handled in the system prompt **and** - for the non-negotiables - enforced in code (`lib/mcp/guardrails.ts`).
 
 ## How it works
 
@@ -18,8 +18,8 @@ CLI (pnpm cli) ─────────────┘         │
 ```
 
 - **Auth is per end user** (delegated OAuth 2.1 + PKCE). There is **no Swiggy client id/secret** - the app self-registers via Dynamic Client Registration (`POST /auth/register`) on first use. Each user logs in with their own Swiggy phone + OTP; their 5-day token is stored in Postgres. v1 has no refresh tokens: on expiry/401 the bot sends a fresh login link (silent re-auth while the 30-day Swiggy session lives).
-- **Capabilities are discovered, not hardcoded** - tools come from MCP `listTools` on each server; if a server is down, its tools simply don't exist that session.
-- **No approval needed for local dev** - everything below runs against the real Swiggy staging endpoints from localhost. Apply for production access only when going live (see `docs/swiggy/docs/operate/access.md`).
+- **Capabilities are discovered, not hardcoded** - tools come from MCP `listTools` on each server (51 across the three today); if a server is down, its tools simply don't exist that session.
+- **No approval needed for local dev** - everything below runs against the real Swiggy staging endpoints from localhost. Apply for production access only when going live (see `docs/swiggy/operate/access.md`).
 
 ## Prerequisites
 
@@ -34,6 +34,7 @@ CLI (pnpm cli) ─────────────┘         │
 pnpm install
 cp .env.example .env.local        # then fill in the values
 pnpm db:push                      # create tables
+pnpm docs:sync                    # optional: re-vendor docs/swiggy/ from mcp.swiggy.com
 ```
 
 Minimal `.env.local` for CLI-only dev:
@@ -107,6 +108,8 @@ pnpm webhook:set                  # registers the webhook with Telegram
 
 Message your bot. `/logout` unlinks the Swiggy account.
 
+Messages go out as **plain text**, not Markdown, so bare URLs auto-link and underscores survive - that is what keeps both the OAuth login link and the UPI `bridgeUrl` (which carries a query string) intact.
+
 **Keep the OAuth redirect on localhost.** Swiggy allowlists redirect URIs by exact match and accepts only HTTPS or `http://localhost`, so a tunnel hostname is refused at `/authorize` with "isn't whitelisted yet". The two URLs are configured separately - Telegram posts to the tunnel, the browser lands on localhost:
 
 ```env
@@ -158,15 +161,32 @@ Serverless notes:
 - **The MCP session cache is per instance**, so cold starts reconnect to all three servers (roughly a second).
 - **`DB_POOL_MAX` defaults to 1 on Vercel**, so many instances don't exhaust Neon's connection limit on the direct endpoint.
 
+## Payments
+
+Orders settle over **UPI, in chat**. There is no polling loop, and no QR is ever rendered here.
+
+1. The user confirms the order. The bot calls `get_payment_options` and reads back at most three of `data.allMethods` by display name, plus Cash when `data.cod.available`. It never asks for a UPI ID (NPCI forbids it) and never asks what device you're on.
+2. The pick goes straight into the placement tool - `intentApp` for a UPI app, `generateUPIQR` for scan-QR, `paymentMethod: "Cash"` for COD.
+3. A UPI placement comes back `PENDING_PAYMENT`: the order is **reserved, not placed**. The bot sends the response's `bridgeUrl` bare on its own line - an https page that both opens your UPI app and shows a scannable QR - and asks you to reply "paid".
+4. On that next message it calls `check_payment_status` **once**, then `confirm_order` if the payment succeeded but wasn't auto-confirmed. `failed` re-offers the picker; `cancelled` and `refund-initiated` stop; `cart_changed` shows the cart again.
+
+**Why no poll loop.** `check_payment_status` is a long poll - Swiggy holds the connection ~19s - and the Telegram webhook has `maxDuration = 60`. One loop iteration can eat a third of the turn budget for a "still pending", so the flow is driven by the user across turns instead. `check_payment_status` shares the 10s cooldown with the tracking tools, enforced from `tool_call_log`.
+
+`confirm_order` is documented idempotent and never places an unpaid order, so unlike placement it _is_ retried on a 5xx. It carries no separate consent gate - you consented when you confirmed the order and then paid with your own hands - but it runs at most once per order per turn.
+
 ## Tests
 
 ```bash
 pnpm test         # guardrail behaviors: cap/minimum blocks, confirmation gate,
-                  # duplicate-placement latch, check-then-retry, track cooldown,
-                  # phantom-coupon scrub, paid-slot filter, required-arg
-                  # validation, plus the agent turn loop, the Telegram webhook,
-                  # the OAuth/PKCE flow, MCP session wiring, provider message
-                  # mapping, error classification and backoff policy
+                  # duplicate-placement latch, check-then-retry, the 10s
+                  # cooldown on tracking/delivery/payment reads, the
+                  # once-per-order confirm_order latch, the PENDING_PAYMENT
+                  # note, create_address coordinate stripping, phantom-coupon
+                  # scrub, paid-slot filter, required-arg validation, plus the
+                  # agent turn loop, the system prompt, the docs sync helpers,
+                  # the Telegram webhook, the OAuth/PKCE flow, MCP session
+                  # wiring, provider message mapping, error classification and
+                  # backoff policy
 pnpm lint
 pnpm format:check
 pnpm typecheck
@@ -190,7 +210,8 @@ Nothing in the suite touches the network or a real database (`DATABASE_URL` poin
 | `app/api/webhook`              | Telegram webhook (instant ack, async processing, secret check, dedupe)                                                                                                                                                                                             |
 | `app/api/auth/callback/swiggy` | OAuth redirect handler (+ Telegram notification)                                                                                                                                                                                                                   |
 | `scripts/cli-chat.ts`          | Local REPL surface                                                                                                                                                                                                                                                 |
-| `docs/swiggy/`                 | Vendored Swiggy Builders Club docs (auth, flows, all 35 tool references)                                                                                                                                                                                           |
+| `docs/swiggy/`                 | Vendored Swiggy Builders Club docs (auth, flows, recipes, all 51 tool references) - refresh with `pnpm docs:sync`                                                                                                                                                  |
+| `scripts/sync-docs.ts`         | Re-vendors `docs/swiggy/` from `mcp.swiggy.com/builders/llms.txt` (`pnpm docs:sync`)                                                                                                                                                                               |
 
 ## Design notes & caveats
 
@@ -200,5 +221,5 @@ Nothing in the suite touches the network or a real database (`DATABASE_URL` poin
 - **Telegram is webhook-only** with plain `fetch` - no `node-telegram-bot-api` (that library is long-polling-oriented).
 - **Orders can only succeed once per turn.** The confirmation gate opens on a "yes", but a "yes" stays true for the whole turn, so a model that calls `place_food_order` twice would be authorised twice. A successful placement latches the tool off for the rest of the turn; a failed one does not, so the documented single retry still works.
 - **Rate limits**: none enforced by Swiggy MCP in v1.0; the bot still keeps `track_*` ≥10s apart - read from `tool_call_log`, not process memory, so the gap holds across serverless instances - and caches MCP sessions/addresses per turn.
-- **Cancellations** have no tool by design - the bot gives Swiggy care: **080-67466729**.
+- **Cancellations**: Food and Instamart still have no tool, so the bot gives Swiggy care: **080-67466729**. Dineout has `cancel_booking`, which is not rolled out to every account; when it is present the bot reads the booking back, takes an explicit yes, and calls it.
 - **Swiggy access tokens are stored in plaintext** in `swiggy_tokens`. Deliberately deferred: they live 5 days, are revocable with `/logout`, and encrypting them needs a key-management story this demo doesn't have. Treat the database as sensitive.

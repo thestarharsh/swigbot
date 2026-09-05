@@ -1,8 +1,6 @@
 # your_go_to_items
 
-> Fetch the user's Your Go To Items (frequently or recently ordered items) for the selected delivery address. Use addressId from get_addresses. Returns products with variants; use spinId from the chose...
-
-Fetch the user's Your Go To Items (frequently or recently ordered items) for the selected delivery address. Use addressId from get_addresses. Returns products with variants; use spinId from the chosen variant when adding to cart.
+Fetch the user's Your Go To Items (frequently or recently ordered items) for the selected delivery address. Use addressId from get_addresses. Returns products with variants; pass BOTH spinId and skuId from the chosen variant when adding to cart via update_cart.
 
 ## Example
 
@@ -75,6 +73,24 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: {
+  nextOffset: string;
+  products: SearchProduct[];
+  similarProducts?: SearchProduct[];
+}
+```
+
+The product shape is the same as `search_products`.
+
+### Schema notes
+
+- `nextOffset`: pagination fields. Use them only to fetch or display more results from the same query/list; do not treat offsets as item IDs.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
 
 ## Details
 

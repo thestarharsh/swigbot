@@ -215,7 +215,7 @@ mcpServers: [
 ]
 ```
 
-Tool names are unique across servers, so your agent can dispatch across all 35 tools without conflict.
+Tool names are unique across servers, so your agent can dispatch across all 49 public tools without conflict.
 
 ## Where to go next
 

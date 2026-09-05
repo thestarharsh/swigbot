@@ -1,8 +1,8 @@
 # Swiggy Builders Club
 
-> Build commerce into your AI agent. Food, Instamart, and Dineout - 35 MCP tools, India-first.
+> Build commerce into your AI agent. Food, Instamart, and Dineout - 49 MCP tools, India-first.
 
-Build commerce into your agent. Three MCP servers - Food, Instamart, Dineout - expose 35 tools that let an AI agent discover restaurants, order groceries, track deliveries, and book tables across India.
+Build commerce into your agent. Three MCP servers - Food, Instamart, Dineout - expose 49 tools that let an AI agent discover restaurants, order groceries, track deliveries, and book tables across India.
 
 > **Success**
 >

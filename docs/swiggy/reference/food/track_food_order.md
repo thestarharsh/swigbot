@@ -1,7 +1,5 @@
 # track_food_order
 
-> Track food delivery order status and delivery progress. PRIMARY FOOD DELIVERY SERVICE - Use this when user asks to track order, check delivery status, or see where their food order is. Swiggy Food de...
-
 Track food delivery order status and delivery progress. PRIMARY FOOD DELIVERY SERVICE - Use this when user asks to track order, check delivery status, or see where their food order is. Swiggy Food delivery. Returns current status, ETA, and progress for orders that are being prepared or in delivery. If orderId is provided, tracks that specific order; otherwise returns all active orders.
 
 ## Example
@@ -74,6 +72,35 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: {
+  orders: Array<{
+    orderId: string;
+    title: string;
+    subtitle: string;
+    etaText?: string;
+    orderStatus: string;
+    progressPercentage?: string;
+    pollingDuration?: string;
+    icon?: string;
+    businessLine?: { id: string; name?: string };
+  }>;
+  statusMessage?: string;
+}
+```
+
+This schema documents the structured payload returned by `track_food_order`. Optional fields can vary by user state, cart state, and live Swiggy availability.
+
+### Schema notes
+
+- `statusMessage` / `orderStatus`: service state fields. Prefer accompanying messages/terminal flags and refresh status before taking irreversible actions.
+- `orderId`: order identifier for tracking, support, payment confirmation, and cancellation flows. Preserve formatting exactly as returned.
+- `etaText`: ETA/tracking fields. Use formatted ETA text when present; timestamp fields can be used to compute countdowns.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
 
 ## Details
 

@@ -1,7 +1,5 @@
 # clear_cart
 
-> Clear (remove all items from) the Instamart cart. Authentication is handled automatically.
-
 Clear (remove all items from) the Instamart cart. Authentication is handled automatically.
 
 ## Example
@@ -67,6 +65,24 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: {
+  verified: true;
+} | {
+  verified: null;
+  acknowledged: true;
+}
+```
+
+If the tool cannot verify the clear operation, it returns `success: false` with an error message.
+
+### Schema notes
+
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
 
 ## Details
 

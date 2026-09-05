@@ -8,7 +8,7 @@ Tool-level changes are auto-discoverable from the [reference](/docs/reference.md
 
 **Shipped**
 
-- Three MCP servers live: Food (14 tools), Instamart (13 tools), Dineout (8 tools).
+- Three MCP servers live: Food (18 tools), Instamart (19 tools), Dineout (12 tools).
 - OAuth 2.1 authorization-code flow with PKCE (S256) on all endpoints. JWT signature validation is performed at the HAProxy edge.
 - Streamable HTTP transport per [MCP spec](https://modelcontextprotocol.io).
 - India-only region (AWS Mumbai primary, Singapore failover).

@@ -1,7 +1,5 @@
 # flush_food_cart
 
-> Clear or empty the food delivery cart. PRIMARY FOOD DELIVERY SERVICE - Use this to remove all items from the food delivery cart. Swiggy Food delivery. NOT for groceries.
-
 Clear or empty the food delivery cart. PRIMARY FOOD DELIVERY SERVICE - Use this to remove all items from the food delivery cart. Swiggy Food delivery. NOT for groceries.
 
 ## Example
@@ -67,6 +65,25 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: {
+  statusCode?: number;
+  statusMessage?: string;
+  success?: boolean;
+  message?: string;
+}
+```
+
+The response confirms the cart-clear request. Exact status text can vary by cart state.
+
+### Schema notes
+
+- `statusCode` / `statusMessage`: service state fields. Prefer accompanying messages/terminal flags and refresh status before taking irreversible actions.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
 
 ## Details
 

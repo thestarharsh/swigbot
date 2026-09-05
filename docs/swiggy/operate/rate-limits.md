@@ -4,32 +4,30 @@
 
 ## Status today
 
-Rate limiting is **not enforced at the MCP layer in v1.0**. Abusive traffic is shed upstream (at Swiggy's ingress and core services), not by the MCP server itself. That means:
+Rate limiting is **enforced at the MCP layer**. Auth events (connection and initialization handshakes) are counted and throttled independently of tool-call volume. That means:
 
-- You will not see `429 Too Many Requests` from a Swiggy MCP endpoint today.
-- You will not see `X-RateLimit-*` response headers today.
-- If upstream sheds your traffic, the tool call surfaces as an `UPSTREAM_ERROR`-class failure (see [errors](/docs/reference/errors.md)) - retry with exponential backoff.
+- You **will** see `429 Too Many Requests` from a Swiggy MCP endpoint if you exceed the quotas below.
+- You **will** see `X-RateLimit-*` response headers on every successful response.
+- If rate limited, the tool call surfaces as a `RATE_LIMITED` error — stop retrying immediately, apply backoff, and if blocked raise a request to [builders@swiggy.in](mailto:builders@swiggy.in).
 
-If you're building for production traffic that will exceed the planned quotas below, email [builders@swiggy.in](mailto:builders@swiggy.in) **before** you launch so we can negotiate a custom ceiling and keep you off the upstream shedder.
+If you're building for production traffic that will exceed the quotas below, email [builders@swiggy.in](mailto:builders@swiggy.in) **before** you launch so we can negotiate a custom ceiling.
 
-## Planned quotas (v1.x developer tier)
+## Active quotas
 
-These are the ceilings we'll advertise once MCP-layer rate limiting ships. They are **guidance, not enforcement**, today.
-
-| Scope | Planned limit |
+| Scope | Limit |
 | --- | --- |
-| Per authenticated user, per server | 120 requests / minute |
+| Per authenticated user, per server | 70 requests / minute |
 | Per authenticated user, per server (write tools) | 30 requests / minute |
 | Burst (10-second window) | 2× steady-state |
 
 Limits are keyed on the authenticated user. Enterprise integrators will get bespoke ceilings scoped at onboarding.
 
-## Planned response contract
+## Response contract
 
-When MCP-layer rate limiting ships, every successful response will carry:
+Every successful response carries:
 
 ```
-X-RateLimit-Limit: 120
+X-RateLimit-Limit: 70
 X-RateLimit-Remaining: 87
 X-RateLimit-Reset: 1720000060
 ```
@@ -60,6 +58,20 @@ Turnaround: typically same business day once validated. Enterprise partners get 
 - **Don't poll `track_*` faster than 10s** - delivery-partner ETA updates arrive at that cadence.
 - **Back off aggressively on transient upstream errors** - exponential backoff with jitter, max 5 retries.
 - **Separate user activity from background jobs** - if you run nightly analytics, talk to us at onboarding so we can carve out a bespoke ceiling and keep that traffic off your interactive budget.
+
+## Connection & session hygiene
+
+- **One session per user, not one per request.** Auth happens once per connection. Do not reconnect on every tool call — each reconnect generates a new auth event and counts toward the rate limit.
+- **Initialize domains sequentially, not in parallel.** Connecting to `/im`, `/food`, and `/dineout` simultaneously multiplies your auth event count by 3. Connect to one domain, wait for success, then connect to the next.
+- **Never create a new initialize handshake per tool invocation.** One persistent session handles all tool calls. Reinitializing per call is the most common cause of rate limit breaches in production.
+- **Stop all connection attempts immediately on receiving a block or rejection.** Continued auth attempts after a block extend the incident window. If blocked, raise a request to [builders@swiggy.in](mailto:builders@swiggy.in).
+
+## What triggers the rate limit
+
+- Reconnecting on every request or every tool call
+- Parallel multi-domain initialization (`/im` + `/food` + `/dineout` simultaneously)
+- Missing or broken backoff logic on connection errors
+- Long-running automated jobs that reinitialize sessions periodically
 
 ## Voice & ambient guidance
 

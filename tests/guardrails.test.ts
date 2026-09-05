@@ -642,3 +642,412 @@ describe("hallucinated tool names", () => {
     expect(result.text).toContain("get_addresses");
   });
 });
+
+/**
+ * Response shapes lifted from the vendored place-order references
+ * (docs/swiggy/reference/{food,instamart,dineout}). Instamart and Dineout
+ * carry no `normalizedStatus`; only Food does.
+ */
+const PENDING_FOOD = {
+  success: true,
+  data: {
+    orderId: "ord_42",
+    paasId: "paas_42",
+    transactionId: "txn_42",
+    upiIntentUrl: "upi://pay?pa=swiggy@icici&am=420",
+    bridgeUrl: "https://mcp.swiggy.com/pay/bridge?paasId=paas_42&orderId=ord_42",
+    isQrFlow: false,
+    pollingIntervalInMs: 3000,
+    maxTimeToPollForInMs: 300000,
+    paymentMethod: "UPI",
+    status: "PENDING_PAYMENT",
+    normalizedStatus: "pending",
+    addressId: "addr_1",
+    cartId: "cart_1",
+    lat: 12.9716,
+    lng: 77.5946,
+  },
+};
+
+const PENDING_INSTAMART = {
+  success: true,
+  data: {
+    orderId: "ord_im",
+    transactionId: "txn_im",
+    paasId: "paas_im",
+    upiIntentUrl: "upi://pay?pa=swiggy@icici&am=310",
+    bridgeUrl: "https://mcp.swiggy.com/pay/bridge?paasId=paas_im&orderId=ord_im",
+    isQrFlow: true,
+    pollingIntervalInMs: 3000,
+    maxTimeToPollForInMs: 300000,
+    paymentMethod: "UPI",
+    status: "PENDING_PAYMENT",
+    cartTotal: 310,
+  },
+};
+
+const PENDING_DINEOUT = {
+  success: true,
+  data: {
+    orderId: "ord_do",
+    paasId: "paas_do",
+    transactionId: "txn_do",
+    upiIntentUrl: "upi://pay?pa=swiggy@icici&am=199",
+    bridgeUrl: "https://mcp.swiggy.com/pay/bridge?paasId=paas_do&orderId=ord_do",
+    isQrFlow: false,
+    pollingIntervalInMs: 3000,
+    maxTimeToPollForInMs: 300000,
+    paymentMethod: "UPI",
+    status: "PENDING_PAYMENT",
+    isDineout: true,
+  },
+};
+
+const CONFIRMED_FOOD = {
+  success: true,
+  data: {
+    orderId: "ord_cash",
+    status: "CONFIRMED",
+    normalizedStatus: "success",
+    totalAmount: 420,
+    restaurantName: "Meghana Foods",
+  },
+};
+
+describe("rate-limited reads share the 10s cooldown", () => {
+  const FIRST_CALL: Record<string, Record<string, unknown>> = {
+    check_payment_status: { paasId: "paas_42" },
+    get_food_delivery_status: { orderId: "ord_42" },
+    get_delivery_status: { orderId: "ord_im", addressId: "addr_1" },
+  };
+
+  for (const [tool, args] of Object.entries(FIRST_CALL)) {
+    it(`lets ${tool} through once, then refuses the next call`, async () => {
+      const userId = nextUserId++;
+      const session = fakeSession({ [tool]: () => ok({ status: "pending" }) });
+
+      const first = await executeGuardedTool(session, userId, tool, args);
+      expect(first.isError).toBe(false);
+
+      const second = await executeGuardedTool(session, userId, tool, args);
+      expect(second.isError).toBe(true);
+      expect(second.text).toContain(tool);
+      expect(second.text).toContain("last known status");
+      expect(second.text).toContain("Do not call this tool again yet");
+    });
+  }
+
+  it("keeps the cooldown per tool, so a payment check does not block tracking", async () => {
+    const userId = nextUserId++;
+    const session = fakeSession({
+      check_payment_status: () => ok({ status: "pending", terminal: false }),
+      track_food_order: () => ok({ status: "OUT_FOR_DELIVERY" }),
+    });
+    await executeGuardedTool(session, userId, "check_payment_status", { paasId: "paas_42" });
+    const track = await executeGuardedTool(session, userId, "track_food_order", {
+      orderId: "ord_42",
+    });
+    expect(track.isError).toBe(false);
+  });
+});
+
+describe("confirm_order", () => {
+  const turn = () => ({ userText: "paid", confirmedOrders: new Set<string>() });
+
+  it("needs no consent gate: the user consented at placement and paid themselves", async () => {
+    const session = fakeSession({
+      confirm_order: () => ok({ orderId: "ord_42", result: "success" }),
+    });
+    const result = await executeGuardedTool(session, nextUserId++, "confirm_order", {
+      orderId: "ord_42",
+      addressId: "addr_1",
+      lat: 12.9716,
+      lng: 77.5946,
+    });
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("ord_42");
+  });
+
+  it("blocks a second call for the same order in one turn, but not a different order", async () => {
+    const confirm = vi.fn().mockResolvedValue(ok({ result: "success" }));
+    const session = fakeSession({ confirm_order: confirm });
+    const userId = nextUserId++;
+    const ctx = turn();
+
+    expect(
+      (await executeGuardedTool(session, userId, "confirm_order", { orderId: "ord_42" }, ctx))
+        .isError,
+    ).toBe(false);
+
+    const again = await executeGuardedTool(
+      session,
+      userId,
+      "confirm_order",
+      { orderId: "ord_42", paasId: "paas_42" },
+      ctx,
+    );
+    expect(again.isError).toBe(true);
+    expect(again.text).toContain("already run for order ord_42");
+
+    const other = await executeGuardedTool(
+      session,
+      userId,
+      "confirm_order",
+      { orderId: "ord_99" },
+      ctx,
+    );
+    expect(other.isError).toBe(false);
+    expect(confirm).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses to guess an order id", async () => {
+    const confirm = vi.fn();
+    const session = fakeSession({ confirm_order: confirm });
+    const result = await executeGuardedTool(session, nextUserId++, "confirm_order", {
+      paasId: "paas_42",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Never invent an order id");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("is retried through a transient 5xx, because Swiggy documents it idempotent", async () => {
+    const confirm = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"))
+      .mockResolvedValueOnce(ok({ orderId: "ord_42", result: "success" }));
+    const session = fakeSession({ confirm_order: confirm });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "confirm_order",
+      { orderId: "ord_42" },
+      turn(),
+    );
+    expect(confirm).toHaveBeenCalledTimes(3);
+    expect(result.isError).toBe(false);
+  });
+
+  it("latches only on an answer from Swiggy, so a failed attempt can be retried", async () => {
+    // A 5xx that exhausted the retries told the model nothing; latching it
+    // would turn "may retry once" into "already confirmed".
+    const confirm = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("HTTP 502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("HTTP 502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("HTTP 502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("HTTP 502 Bad Gateway"))
+      .mockRejectedValueOnce(new Error("HTTP 502 Bad Gateway"))
+      .mockResolvedValueOnce(ok({ orderId: "ord_42", result: "success" }));
+    const session = fakeSession({ confirm_order: confirm });
+    const userId = nextUserId++;
+    const ctx = turn();
+
+    await expect(
+      executeGuardedTool(session, userId, "confirm_order", { orderId: "ord_42" }, ctx),
+    ).rejects.toThrow("502");
+    expect(ctx.confirmedOrders.has("ord_42")).toBe(false);
+
+    const retry = await executeGuardedTool(
+      session,
+      userId,
+      "confirm_order",
+      { orderId: "ord_42" },
+      ctx,
+    );
+    expect(retry.isError).toBe(false);
+    expect(ctx.confirmedOrders.has("ord_42")).toBe(true);
+  });
+});
+
+describe("cancel_booking is destructive", () => {
+  it("refuses without the user's own confirmation, then allows it", async () => {
+    const cancel = vi.fn().mockResolvedValue(ok({ orderId: "ord_do", status: "CANCELLED" }));
+    const session = fakeSession({ cancel_booking: cancel });
+    const userId = nextUserId++;
+
+    const refused = await executeGuardedTool(
+      session,
+      userId,
+      "cancel_booking",
+      { orderId: "ord_do" },
+      { userText: "I can't make it tonight" },
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("cancels a confirmed table booking");
+    expect(refused.text).toContain("restaurant, date, time, guests");
+    expect(cancel).not.toHaveBeenCalled();
+
+    const allowed = await executeGuardedTool(
+      session,
+      userId,
+      "cancel_booking",
+      { orderId: "ord_do" },
+      { userText: "yes" },
+    );
+    expect(allowed.isError).toBe(false);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PENDING_PAYMENT placements are annotated, not announced", () => {
+  const CASES: [string, unknown, Record<string, unknown>][] = [
+    ["place_food_order", PENDING_FOOD, { addressId: "addr_1" }],
+    ["checkout", PENDING_INSTAMART, { addressId: "addr_1" }],
+    ["book_table", PENDING_DINEOUT, { slotId: 1 }],
+  ];
+
+  for (const [tool, payload, args] of CASES) {
+    it(`appends _payment_note to a pending ${tool} result and keeps bridgeUrl`, async () => {
+      const session = fakeSession({
+        get_food_cart: () => ok({ cart: { bill_total: 420 } }),
+        get_cart: () => ok({ bill: { total_to_pay: 310 } }),
+        [tool]: () => ok(payload),
+      });
+      const result = await executeGuardedTool(session, nextUserId++, tool, args, CONFIRMED);
+      expect(result.isError).toBe(false);
+
+      const parsed = JSON.parse(result.text) as Record<string, unknown> & {
+        data: Record<string, unknown>;
+      };
+      expect(parsed._payment_note).toContain("NOT placed yet");
+      expect(parsed._payment_note).toContain("bridgeUrl");
+      expect(parsed._payment_note).toContain("Do not call check_payment_status in this turn");
+      // Every original field survives untouched, the payment link above all.
+      expect(parsed.data).toEqual((payload as { data: unknown }).data);
+    });
+  }
+
+  it("says nothing on a Cash placement that is already CONFIRMED", async () => {
+    const session = fakeSession({
+      get_food_cart: () => ok({ cart: { bill_total: 420 } }),
+      place_food_order: () => ok(CONFIRMED_FOOD),
+    });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "place_food_order",
+      { addressId: "addr_1" },
+      CONFIRMED,
+    );
+    expect(result.text).not.toContain("_payment_note");
+    expect(JSON.parse(result.text)).toEqual(CONFIRMED_FOOD);
+  });
+
+  it("latches the placement: a PENDING_PAYMENT order already exists server-side", async () => {
+    const place = vi.fn().mockResolvedValue(ok(PENDING_FOOD));
+    const session = fakeSession({
+      get_food_cart: () => ok({ cart: { bill_total: 420 } }),
+      place_food_order: place,
+    });
+    const userId = nextUserId++;
+    const ctx = { userText: "yes", completed: new Set<string>() };
+
+    expect(
+      (await executeGuardedTool(session, userId, "place_food_order", { addressId: "addr_1" }, ctx))
+        .isError,
+    ).toBe(false);
+    const second = await executeGuardedTool(
+      session,
+      userId,
+      "place_food_order",
+      { addressId: "addr_1" },
+      ctx,
+    );
+    expect(second.isError).toBe(true);
+    expect(second.text).toContain("already completed");
+    expect(place).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("create_address", () => {
+  const ADDRESS = {
+    fullAddress: "12B, Sobha Lotus, Sarjapur Road, Bengaluru 560103",
+    addressLine: "12B, Sobha Lotus",
+    addressLine2: "Sarjapur Road",
+    city: "Bengaluru",
+    postalCode: "560103",
+    addressCategory: "HOME",
+    userName: "Ada",
+    userPhone: "+919000000000",
+  };
+
+  const addressSession = (seen: Record<string, unknown>[]) =>
+    fakeSession({
+      create_address: (args) => {
+        seen.push(args);
+        return ok({ addressId: "addr_new_123" });
+      },
+    });
+
+  it("strips coordinates the model invented from the doc example", async () => {
+    // The reference page's example pin is 12.9716, 77.5946 - pasted verbatim
+    // it delivers a real order to the middle of Bengaluru.
+    const seen: Record<string, unknown>[] = [];
+    const result = await executeGuardedTool(
+      addressSession(seen),
+      nextUserId++,
+      "create_address",
+      { ...ADDRESS, latitude: 12.9716, longitude: 77.5946 },
+      { userText: "add my home address: 12B, Sobha Lotus, Sarjapur Road, Bengaluru 560103" },
+    );
+    expect(result.isError).toBe(false);
+    expect(seen[0]).toEqual(ADDRESS);
+  });
+
+  it("keeps coordinates the user typed themselves", async () => {
+    const seen: Record<string, unknown>[] = [];
+    await executeGuardedTool(
+      addressSession(seen),
+      nextUserId++,
+      "create_address",
+      { ...ADDRESS, latitude: 12.9716, longitude: 77.5946 },
+      { userText: "my pin is 12.9716, 77.5946 - save it as home" },
+    );
+    expect(seen[0].latitude).toBe(12.9716);
+    expect(seen[0].longitude).toBe(77.5946);
+  });
+
+  it("does not mistake a postal code or phone number for a pin", async () => {
+    const seen: Record<string, unknown>[] = [];
+    await executeGuardedTool(
+      addressSession(seen),
+      nextUserId++,
+      "create_address",
+      { ...ADDRESS, latitude: 12.9716, longitude: 77.5946 },
+      { userText: "Bengaluru 560103, call me on 98765 43210" },
+    );
+    expect(seen[0]).not.toHaveProperty("latitude");
+  });
+
+  it("blocks a category outside the five Swiggy accepts", async () => {
+    const seen: Record<string, unknown>[] = [];
+    const result = await executeGuardedTool(
+      addressSession(seen),
+      nextUserId++,
+      "create_address",
+      { ...ADDRESS, addressCategory: "HOUSE" },
+      { userText: "save my house address" },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("FRIENDS_AND_FAMILY");
+    expect(seen).toHaveLength(0);
+  });
+});
+
+describe("the phantom-coupon scrub covers Instamart too", () => {
+  for (const tool of ["get_cart", "apply_coupon"]) {
+    it(`scrubs a zero-discount coupon out of ${tool}`, async () => {
+      const session = fakeSession({
+        [tool]: () => ok({ bill: { coupon_applied: "SAVE100", coupon_discount: 0, total: 310 } }),
+      });
+      const result = await executeGuardedTool(session, nextUserId++, tool, {
+        addressId: "addr_1",
+        couponCode: "SAVE100",
+      });
+      expect(result.text).not.toContain("SAVE100");
+      expect(result.text).toContain("No coupon is actually applied");
+    });
+  }
+});

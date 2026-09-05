@@ -1,7 +1,5 @@
 # track_order
 
-> Track Swiggy Instamart order status in real-time. PRIMARY TOOL for order tracking - Use this FIRST when user asks: \"where is my order\", \"track my order\", \"order status\", \"what's the status of my orde...
-
 Track Swiggy Instamart order status in real-time. PRIMARY TOOL for order tracking - Use this FIRST when user asks: "where is my order", "track my order", "order status", "what's the status of my order", "when will my order arrive", "ETA for my order", "is my order on the way", "has my order been delivered", "track order", "check order status", or any query about a specific order's current status. Returns real-time tracking info including: current status, ETA, delivery partner location, store info, delivery address, items ordered, and payment details. Requires orderId and delivery address coordinates. If user doesn't provide orderId, first use get_orders to find the order, then use this tool to track it.
 
 ## Example
@@ -82,6 +80,54 @@ On failure:
 ```
 
 See [Error codes](/docs/reference/errors.md) for the full catalogue.
+
+### Output schema
+
+```ts
+data: {
+  orderId: string;
+  orderTitle: string;
+  orderSubtitle: string;
+  status: {
+    statusMessage: string;
+    subStatusMessage?: string;
+    etaMinutes?: number;
+    etaText?: string;
+  };
+  storeInfo?: { name: string; address: string };
+  deliveryInfo?: { addressLabel?: string; fullAddress: string };
+  items: Array<{ name: string; quantity: number; price: string }>;
+  itemCount: number;
+  placedAt?: string;
+  paymentInfo?: { message: string; amount?: string };
+  mapInfo?: {
+    storeLocation?: TrackLocation;
+    storeAnnotation?: string;
+    deliveryLocation?: TrackLocation;
+    deliveryAnnotation?: string;
+    riderLocation?: TrackLocation;
+  };
+  pollingIntervalSeconds: number;
+}
+
+type TrackLocation = {
+  latitude: number;
+  longitude: number;
+}
+```
+
+This schema documents the structured payload returned by `track_order`. Optional fields can vary by user state, cart state, and live Swiggy availability.
+
+### Schema notes
+
+- `status` / `statusMessage`: service state fields. Prefer accompanying messages/terminal flags and refresh status before taking irreversible actions.
+- `orderId`: order identifier for tracking, support, payment confirmation, and cancellation flows. Preserve formatting exactly as returned.
+- `pollingIntervalSeconds`: polling hints for status refreshes. Do not poll faster than the returned interval; stop when a terminal status is returned.
+- `etaText` / `etaMinutes`: ETA/tracking fields. Use formatted ETA text when present; timestamp fields can be used to compute countdowns.
+- `latitude` / `longitude`: coordinates from the selected saved location or restaurant context. Reuse returned values for follow-up slot, tracking, or payment calls; do not infer them from address text.
+- `price`: item-level price fields. They may differ before and after coupons, variants, add-ons, or stock updates; use cart/order totals for checkout.
+- Fields marked optional may be omitted depending on user state, cart/order state, and live Swiggy availability.
+- Use returned identifiers and enum values exactly as provided; do not invent fallback IDs, status values, payment methods, or timestamps.
 
 ## Details
 

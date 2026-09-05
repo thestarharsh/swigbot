@@ -10,6 +10,7 @@ End-to-end journeys you can paste into an agent today.
 
 - [Order food end-to-end](/docs/build/recipes/order-food.md) - 7-tool Food journey, COD payment, tracking.
 - [Order groceries end-to-end](/docs/build/recipes/order-groceries.md) - Instamart discover → cart → checkout → track.
+- [Pay with UPI end-to-end](/docs/build/recipes/pay-with-upi.md) - the shared Payment stage: picker → paid order → confirm, on any server.
 - [Book a table](/docs/build/recipes/book-a-table.md) - Dineout availability + reservation.
 - [Plan my evening (combined)](/docs/build/recipes/combined.md) - Food + Dineout in one agent turn.
 

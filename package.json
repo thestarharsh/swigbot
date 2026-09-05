@@ -21,6 +21,7 @@
     "db:reset": "tsx scripts/reset-db.ts",
     "db:verify": "tsx scripts/verify-db.ts",
     "db:studio": "drizzle-kit studio",
+    "docs:sync": "tsx scripts/sync-docs.ts",
     "cli": "tsx scripts/cli-chat.ts",
     "probe": "tsx scripts/probe-llm.ts",
     "schemas": "tsx scripts/dump-schemas.ts",
