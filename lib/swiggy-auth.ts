@@ -3,13 +3,23 @@ import { and, desc, eq, gt, lt } from "drizzle-orm";
 import { db, schema } from "./db";
 import { swiggyBaseUrl } from "./swiggy-config";
 
+const CALLBACK_PATH = "/api/auth/callback/swiggy";
+
 /**
  * Kept separate from the public app URL: Swiggy allowlists redirect URIs by
  * exact match and permits only HTTPS or `http://localhost`, so tunnel and
- * hosting hostnames are rejected at /authorize.
+ * hosting hostnames are rejected at /authorize. The env value is an origin,
+ * but a pasted full callback URL is accepted too: appending the path twice
+ * produced a 404 on the very first production login.
  */
-export const redirectUri = () =>
-  `${process.env.SWIGGY_REDIRECT_BASE_URL || process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000"}/api/auth/callback/swiggy`;
+export const redirectUri = () => {
+  const base = (
+    process.env.SWIGGY_REDIRECT_BASE_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    "http://localhost:3000"
+  ).replace(/\/+$/, "");
+  return base.endsWith(CALLBACK_PATH) ? base : `${base}${CALLBACK_PATH}`;
+};
 
 /** Max age of a pending PKCE session (user typing phone + OTP in browser). */
 const AUTH_SESSION_TTL_MS = 15 * 60 * 1000;

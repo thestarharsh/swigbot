@@ -55,7 +55,23 @@ vi.mock("../lib/db", async () => {
   };
 });
 
-import { beginAuth, getValidToken, handleCallback } from "../lib/swiggy-auth";
+import { beginAuth, getValidToken, handleCallback, redirectUri } from "../lib/swiggy-auth";
+
+describe("redirectUri", () => {
+  it("appends the callback path to an origin, once, whatever the operator pasted", () => {
+    // The first production login 404ed because the env var held the full
+    // callback URL and the path was appended a second time.
+    for (const base of [
+      "https://swigbot.vercel.app",
+      "https://swigbot.vercel.app/",
+      "https://swigbot.vercel.app/api/auth/callback/swiggy",
+      "https://swigbot.vercel.app/api/auth/callback/swiggy/",
+    ]) {
+      process.env.SWIGGY_REDIRECT_BASE_URL = base;
+      expect(redirectUri(), base).toBe("https://swigbot.vercel.app/api/auth/callback/swiggy");
+    }
+  });
+});
 
 const CLIENT = {
   id: 1,
