@@ -1,7 +1,8 @@
 /**
- * Self-contained HTML for the OAuth callback result pages. No external
- * assets (fonts, images, scripts) - these must render instantly and work
- * under any CSP, straight from the route handler.
+ * Self-contained HTML for the OAuth callback result pages. No third-party
+ * assets (fonts, scripts) - these must render instantly and work under any
+ * CSP, straight from the route handler. The one image is the app's own
+ * /icon.svg, shared with the landing page and the favicon.
  */
 
 export interface AuthPageOptions {
@@ -35,6 +36,7 @@ export function renderAuthPage(opts: AuthPageOptions): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escapeHtml(opts.title)} · SwigBot</title>
+<link rel="icon" type="image/svg+xml" href="/icon.svg">
 <style>
   :root{
     --brand:#FF5200; --brand-soft:#FF7A2F;
@@ -77,9 +79,11 @@ export function renderAuthPage(opts: AuthPageOptions): string {
     text-transform:uppercase;
   }
   .wordmark{
-    margin-top:6px; font-size:26px; font-weight:800; letter-spacing:-.02em;
+    margin-top:8px; font-size:26px; font-weight:800; letter-spacing:-.02em;
+    display:inline-flex; align-items:center; gap:10px;
   }
   .wordmark b{color:var(--brand); font-weight:800}
+  .mark{width:34px; height:34px; border-radius:9px; display:block}
   .halo{
     width:132px; height:132px; margin:24px auto 14px; border-radius:50%;
     display:flex; align-items:center; justify-content:center;
@@ -134,8 +138,8 @@ export function renderAuthPage(opts: AuthPageOptions): string {
 </head>
 <body>
   <main class="card">
-    <div class="eyebrow">Swiggy Builders Club · MCP</div>
-    <div class="wordmark">swigbot<b>.</b></div>
+    <div class="eyebrow">Swiggy account link</div>
+    <div class="wordmark"><img class="mark" src="/icon.svg" alt="" width="34" height="34"><span>SwigBot<b>.</b></span></div>
     ${disc}
     <h1>${escapeHtml(opts.title)}</h1>
     <p class="msg">${escapeHtml(opts.message)}</p>
@@ -147,7 +151,7 @@ export function renderAuthPage(opts: AuthPageOptions): string {
         : ""
     }
     <span class="badge ${ok ? "ok" : "err"}">${ok ? "Account linked" : "Not linked yet"}</span>
-    <div class="foot">Unofficial demo on Swiggy MCP · SwigBot confirms with you before every order</div>
+    <div class="foot">An independent project, not affiliated with Swiggy · SwigBot confirms with you before every order</div>
   </main>
 </body>
 </html>`;

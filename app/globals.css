@@ -1,0 +1,531 @@
+/*
+ * Shared with lib/auth-pages.ts by convention: same tokens, same type stack,
+ * so the landing page and the OAuth result screens read as one product.
+ */
+:root {
+  --brand: #ff5200;
+  --brand-soft: #ff7a2f;
+  --brand-ink: #b83a00;
+  --ground: #fff7f1;
+  --card: #ffffff;
+  --ink: #1c140f;
+  --ink-2: #4f3f35;
+  --muted: #8a7365;
+  --line: #f0e2d8;
+  --inset: #fff3ea;
+  --ok: #1fa35c;
+  --shadow:
+    0 32px 70px -28px rgba(255, 82, 0, 0.3), 0 6px 20px -10px rgba(28, 20, 15, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85);
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand-ink: #ff9a63;
+    --ground: #171310;
+    --card: #221b16;
+    --ink: #f5ede7;
+    --ink-2: #d5c4b8;
+    --muted: #b49b8c;
+    --line: #382c23;
+    --inset: #2b211a;
+    --ok: #3ecf82;
+    --shadow: 0 32px 70px -28px rgba(0, 0, 0, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: var(--ink);
+  background:
+    radial-gradient(
+      900px 420px at 50% -120px,
+      color-mix(in srgb, var(--brand) 16%, transparent),
+      transparent 70%
+    ),
+    radial-gradient(
+      640px 460px at 6% 100%,
+      color-mix(in srgb, var(--brand-soft) 9%, transparent),
+      transparent 72%
+    ),
+    var(--ground);
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.55;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.wrap {
+  width: min(1080px, 100% - 48px);
+  margin: 0 auto;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+.nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 22px 0;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  font-size: 22px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.brand img {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: block;
+}
+
+.brand b {
+  color: var(--brand);
+  font-weight: 800;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.nav-links a {
+  text-decoration: none;
+}
+
+.nav-links a:hover {
+  color: var(--ink);
+}
+
+/* ── Buttons ────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 20px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 15px;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+
+.btn:active {
+  transform: translateY(1px);
+}
+
+.btn-primary {
+  background: var(--brand);
+  color: #fff;
+  box-shadow: 0 10px 24px -12px rgba(255, 82, 0, 0.6);
+}
+
+.btn-primary:hover {
+  background: #e84a00;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--ink);
+  border-color: var(--line);
+}
+
+.btn-ghost:hover {
+  background: var(--card);
+}
+
+.btn svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* ── Hero ───────────────────────────────────────────────────────────── */
+.hero {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 48px;
+  align-items: center;
+  padding: 56px 0 72px;
+}
+
+.eyebrow {
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hero h1 {
+  font-size: clamp(38px, 5.4vw, 58px);
+  line-height: 1.04;
+  letter-spacing: -0.025em;
+  font-weight: 800;
+  margin: 14px 0 18px;
+  text-wrap: balance;
+}
+
+.hero h1 em {
+  font-style: normal;
+  color: var(--brand);
+}
+
+.lede {
+  font-size: 18px;
+  color: var(--ink-2);
+  max-width: 44ch;
+  margin: 0 0 28px;
+  text-wrap: pretty;
+}
+
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.fineprint {
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── Chat mock ──────────────────────────────────────────────────────── */
+.phone {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  box-shadow: var(--shadow);
+  padding: 18px 16px 16px;
+  max-width: 400px;
+  margin-left: auto;
+  width: 100%;
+}
+
+.phone-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 14px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 14px;
+}
+
+.phone-top img {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.phone-top .name {
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.2;
+}
+
+.phone-top .status {
+  font-size: 12px;
+  color: var(--ok);
+  font-weight: 600;
+}
+
+.chat {
+  display: grid;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.msg {
+  max-width: 86%;
+  padding: 10px 13px;
+  border-radius: 16px;
+  white-space: pre-line;
+}
+
+.msg.user {
+  justify-self: end;
+  background: var(--brand);
+  color: #fff;
+  border-bottom-right-radius: 6px;
+}
+
+.msg.bot {
+  justify-self: start;
+  background: var(--inset);
+  color: var(--ink);
+  border-bottom-left-radius: 6px;
+}
+
+.msg .link {
+  color: var(--brand-ink);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+/* ── Sections ───────────────────────────────────────────────────────── */
+section {
+  padding: 56px 0;
+}
+
+section + section {
+  border-top: 1px solid var(--line);
+}
+
+.section-head {
+  max-width: 100ch;
+  margin-bottom: 30px;
+}
+
+.section-head h2 {
+  font-size: clamp(26px, 3.2vw, 34px);
+  letter-spacing: -0.02em;
+  font-weight: 800;
+  margin: 8px 0 10px;
+  text-wrap: balance;
+}
+
+.section-head p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 16.5px;
+}
+
+.grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+}
+
+.tile {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 22px 22px 20px;
+}
+
+.tile .kicker {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--brand-ink);
+  background: var(--inset);
+  padding: 4px 9px;
+  border-radius: 999px;
+}
+
+.tile h3 {
+  margin: 12px 0 8px;
+  font-size: 19px;
+  letter-spacing: -0.01em;
+}
+
+.tile p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.tile .ex {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line);
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.tile .ex b {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Steps are a real sequence, so the numbers carry meaning. */
+.steps {
+  counter-reset: step;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 18px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.steps li {
+  counter-increment: step;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 22px;
+  position: relative;
+}
+
+.steps li::before {
+  content: counter(step);
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--brand);
+  color: #fff;
+  font-weight: 800;
+  font-size: 15px;
+  margin-bottom: 12px;
+}
+
+.steps h3 {
+  margin: 0 0 6px;
+  font-size: 18px;
+}
+
+.steps p {
+  margin: 0;
+  color: var(--ink-2);
+  font-size: 15px;
+}
+
+.rules {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px 28px;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.rules li {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 10px;
+  align-items: start;
+  font-size: 15.5px;
+  color: var(--ink-2);
+  padding: 8px 0;
+}
+
+.rules li svg {
+  width: 22px;
+  height: 22px;
+  color: var(--ok);
+  margin-top: 1px;
+}
+
+/* Own line: scans as title + explanation, and sidesteps SWC eating the space
+   after </b> when the explanation wraps (swc-project/swc#542). */
+.rules li b {
+  display: block;
+  color: var(--ink);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+/* ── Closing CTA + footer ───────────────────────────────────────────── */
+.closing {
+  text-align: center;
+  padding: 64px 0 72px;
+}
+
+.closing h2 {
+  font-size: clamp(28px, 3.6vw, 40px);
+  letter-spacing: -0.02em;
+  font-weight: 800;
+  margin: 0 0 10px;
+  text-wrap: balance;
+}
+
+.closing p {
+  color: var(--ink-2);
+  margin: 0 0 26px;
+}
+
+footer {
+  border-top: 1px solid var(--line);
+  padding: 26px 0 40px;
+  font-size: 13px;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+footer a {
+  color: var(--ink-2);
+  text-decoration: none;
+}
+
+footer a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+    padding: 36px 0 56px;
+  }
+
+  .phone {
+    margin-left: 0;
+  }
+
+  .grid-3,
+  .steps {
+    grid-template-columns: 1fr;
+  }
+
+  .rules {
+    grid-template-columns: 1fr;
+  }
+
+  .nav-links .hide-sm {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .btn {
+    transition: none;
+  }
+}

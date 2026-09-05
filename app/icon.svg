@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- SwigBot mark: a chat bubble on Swiggy orange, three dots for "typing". -->
+  <rect width="64" height="64" rx="16" fill="#FF5200"/>
+  <path d="M18 17h28a7 7 0 0 1 7 7v14a7 7 0 0 1-7 7H29l-9.5 7.5a1.5 1.5 0 0 1-2.4-1.2V45h.9a7 7 0 0 1-7-7V24a7 7 0 0 1 7-7z" fill="#FFFFFF"/>
+  <circle cx="24" cy="31" r="3.2" fill="#FF5200"/>
+  <circle cx="32" cy="31" r="3.2" fill="#FF5200"/>
+  <circle cx="40" cy="31" r="3.2" fill="#FF5200"/>
+</svg>

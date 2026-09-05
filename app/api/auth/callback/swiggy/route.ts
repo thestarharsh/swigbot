@@ -135,7 +135,7 @@ export async function GET(req: NextRequest) {
           "Your Swiggy account is linked to SwigBot for the next 5 days. You can close this tab.",
         steps: [
           "Head back to your chat",
-          "Try: “find biryani near home”",
+          "Try: “cheese pizza near home”",
           "SwigBot always confirms with you before placing any order",
         ],
       },
