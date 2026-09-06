@@ -1051,3 +1051,420 @@ describe("the phantom-coupon scrub covers Instamart too", () => {
     });
   }
 });
+
+// ── Facts-driven guards (from the 2026-09-06 pav bhaji order) ──────────────
+
+import { emptyFacts, type ConversationFacts } from "../lib/mcp/facts";
+
+const PG = "d7rfisolsntnm6jn7big__ARsUSQRlXSo8aW2qXzR0g5";
+const WORK = "curirlakqhtt6ocpui90__ARshhQRlqeIvJ5KTp3AD99";
+const text = (t: string): ToolCallOutcome => ({ text: t, isError: false });
+
+const CART_TEXT = (items: string, pay: number, coupon = "") =>
+  `Restaurant: Veg Sutra\nItems:\n${items}\n\nItem total: ₹0\nDelivery: FREE\n` +
+  `Taxes & charges: ₹0${coupon ? `\nCoupon (${coupon}): -₹125` : ""}\nTO PAY: ₹${pay}`;
+const PAV_BHAJI = "  - Cheese Pav Bhaji — ₹219 (ID: 80961091)";
+const PAV = (n: number) => `  - Pav x${n} — ₹${19 * n} each (subtotal: ₹${19 * n}) (ID: 82273922)`;
+
+function factsWith(over: Partial<ConversationFacts> = {}): ConversationFacts {
+  const f = emptyFacts();
+  f.addressIds.add(PG);
+  f.addressIds.add(WORK);
+  f.menuItemIds.add("80961091");
+  f.menuItemIds.add("82273922");
+  f.addonChoiceIds.add("125734560");
+  return Object.assign(f, over);
+}
+
+describe("address id validation", () => {
+  it("rejects an addressId that differs from the saved ones by a typo", async () => {
+    const call = vi.fn(() => text("ok"));
+    const session = fakeSession({ get_payment_options: call });
+    // Live: the model changed one character (aW2 → aZ2) and Swiggy accepted it.
+    const typo = PG.replace("aW2", "aZ2");
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_payment_options",
+      {
+        addressId: typo,
+      },
+      { userText: "yes", facts: factsWith() },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(`You probably meant ${PG}`);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("passes known ids through, and stays quiet when no address list has been seen", async () => {
+    const call = vi.fn(() => text("ok"));
+    const session = fakeSession({ get_food_cart: call });
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      { addressId: PG },
+      {
+        userText: "x",
+        facts: factsWith(),
+      },
+    );
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      { addressId: "anything" },
+      {
+        userText: "x",
+        facts: emptyFacts(),
+      },
+    );
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("update_food_cart: add-on ids, whole-cart replacement, empty results", () => {
+  it("refuses an add-on choice id sent as menu_item_id before it reaches Swiggy", async () => {
+    const update = vi.fn(() => text("Cart updated.\nCart is empty."));
+    const session = fakeSession({ update_food_cart: update });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "update_food_cart",
+      {
+        addressId: PG,
+        restaurantId: "458195",
+        cartItems: [{ menu_item_id: "125734560", quantity: 1 }],
+      },
+      { userText: "add it", facts: factsWith() },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/125734560 is an add-on choice id/);
+    expect(result.text).toContain("get_restaurant_menu");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("carries over the items the model left out, as they were last sent", async () => {
+    const update = vi.fn((args: Record<string, unknown>) => {
+      const items = args.cartItems as { menu_item_id: string; quantity: number }[];
+      const lines = items
+        .map((i) => (i.menu_item_id === "80961091" ? PAV_BHAJI : PAV(i.quantity)))
+        .join("\n");
+      return text(`Cart updated.\n${CART_TEXT(lines, 329)}`);
+    });
+    const session = fakeSession({ update_food_cart: update });
+    const payload = { menu_item_id: "80961091", quantity: 1, addons: [{ choice_id: "extra" }] };
+    const facts = factsWith({
+      cart: {
+        restaurantId: "458195",
+        restaurantName: "Veg Sutra",
+        items: [
+          { id: "80961091", name: "Cheese Pav Bhaji", quantity: 1 },
+          { id: "82273922", name: "Pav", quantity: 2 },
+        ],
+        toPay: 309,
+        coupon: null,
+      },
+      cartPayloads: new Map([["80961091", payload]]),
+    });
+
+    // Live: "add one more pav" was sent as Pav x3 alone and the pav bhaji vanished.
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "update_food_cart",
+      {
+        addressId: PG,
+        restaurantId: "458195",
+        cartItems: [{ menu_item_id: "82273922", quantity: 3 }],
+      },
+      { userText: "one more pav", facts },
+    );
+
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cartItems: [{ menu_item_id: "82273922", quantity: 3 }, payload],
+      }),
+    );
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("Cheese Pav Bhaji x1 was kept in the cart automatically");
+    expect(facts.cart?.items.map((i) => `${i.id}:${i.quantity}`).sort()).toEqual([
+      "80961091:1",
+      "82273922:3",
+    ]);
+  });
+
+  it("treats quantity 0 as removal and does not merge across restaurants", async () => {
+    const update = vi.fn(() => text("Cart updated.\nCart is empty."));
+    const session = fakeSession({ update_food_cart: update });
+    const cart = {
+      restaurantId: "458195",
+      restaurantName: "Veg Sutra",
+      items: [{ id: "80961091", name: "Cheese Pav Bhaji", quantity: 1 }],
+      toPay: 219,
+      coupon: null,
+    };
+
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "update_food_cart",
+      {
+        addressId: PG,
+        restaurantId: "458195",
+        cartItems: [{ menu_item_id: "80961091", quantity: 0 }],
+      },
+      { userText: "remove it", facts: factsWith({ cart }) },
+    );
+    expect(update).toHaveBeenLastCalledWith(expect.objectContaining({ cartItems: [] }));
+
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "update_food_cart",
+      {
+        addressId: PG,
+        restaurantId: "999",
+        cartItems: [{ menu_item_id: "82273922", quantity: 1 }],
+      },
+      { userText: "switch", facts: factsWith({ cart }) },
+    );
+    expect(update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cartItems: [{ menu_item_id: "82273922", quantity: 1 }] }),
+    );
+  });
+
+  it("turns 'Cart updated. Cart is empty.' into an error when items were requested", async () => {
+    const session = fakeSession({
+      update_food_cart: () => text("Cart updated.\nCart is empty.\n\nCart widget is displayed."),
+    });
+    const facts = factsWith();
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "update_food_cart",
+      {
+        addressId: PG,
+        restaurantId: "458195",
+        cartItems: [{ menu_item_id: "424242", quantity: 1 }],
+      },
+      { userText: "add", facts },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Nothing was added");
+    expect(result.text).toContain("424242");
+    expect(facts.cart).toBeNull();
+
+    // Emptying the cart on purpose is a success.
+    const cleared = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "update_food_cart",
+      {
+        addressId: PG,
+        restaurantId: "458195",
+        cartItems: [],
+      },
+      { userText: "clear", facts: factsWith() },
+    );
+    expect(cleared.isError).toBe(false);
+  });
+});
+
+describe("coupon that fell off the cart", () => {
+  it("is re-applied automatically and the TO PAY line is corrected", async () => {
+    const apply = vi.fn(() =>
+      text("Coupon 'ORDERON' applied successfully!\nDiscount: -₹125\nNew total: ₹204"),
+    );
+    const session = fakeSession({
+      get_food_cart: () => text(CART_TEXT(`${PAV_BHAJI}\n${PAV(3)}`, 329)),
+      apply_food_coupon: apply,
+    });
+    const facts = factsWith({ coupon: "ORDERON" });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      {
+        addressId: PG,
+      },
+      { userText: "cart?", facts },
+    );
+
+    expect(apply).toHaveBeenCalledWith({ addressId: PG, couponCode: "ORDERON" });
+    expect(result.text).toContain("Coupon (ORDERON): -₹125\nTO PAY: ₹204");
+    expect(result.text).not.toMatch(/TO PAY: ₹329/);
+    expect(result.text).toContain("re-applied automatically");
+    expect(facts.quotedTotal.food).toBe(204);
+    expect(facts.coupon).toBe("ORDERON");
+  });
+
+  it("says so plainly when Swiggy refuses it, and stops retrying", async () => {
+    const apply = vi.fn(() => ({ text: "Coupon not applicable on this order", isError: true }));
+    const session = fakeSession({
+      get_food_cart: () => text(CART_TEXT(`${PAV_BHAJI}\n${PAV(3)}`, 329)),
+      apply_food_coupon: apply,
+    });
+    const facts = factsWith({ coupon: "ORDERON" });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      {
+        addressId: PG,
+      },
+      { userText: "cart?", facts },
+    );
+
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("NOT on this cart any more");
+    expect(result.text).toContain("total is ₹329");
+    expect(facts.coupon).toBeNull();
+    expect(facts.quotedTotal.food).toBe(329);
+
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      { addressId: PG },
+      {
+        userText: "cart?",
+        facts,
+      },
+    );
+    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves a cart alone when the coupon is still on it or no coupon was ever applied", async () => {
+    const apply = vi.fn();
+    const session = fakeSession({
+      get_food_cart: () => text(CART_TEXT(PAV_BHAJI, 204, "ORDERON")),
+      apply_food_coupon: apply,
+    });
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      { addressId: PG },
+      {
+        userText: "x",
+        facts: factsWith({ coupon: "ORDERON" }),
+      },
+    );
+    await executeGuardedTool(
+      session,
+      nextUserId++,
+      "get_food_cart",
+      { addressId: PG },
+      {
+        userText: "x",
+        facts: factsWith(),
+      },
+    );
+    expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("price lock at placement", () => {
+  const liveCart = (pay: number, coupon = "") =>
+    text(CART_TEXT(`${PAV_BHAJI}\n${PAV(3)}`, pay, coupon));
+
+  it("refuses to place when the live total differs from the one the user saw", async () => {
+    const place = vi.fn();
+    const session = fakeSession({ get_food_cart: () => liveCart(329), place_food_order: place });
+    // Live: the user agreed to ₹204 on UPI; the Cash re-placement went out at ₹329.
+    const facts = factsWith({ coupon: "ORDERON" });
+    facts.quotedTotal.food = 204;
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "place_food_order",
+      {
+        addressId: PG,
+        paymentMethod: "Cash",
+      },
+      { userText: "do cod and confirm the order", facts },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("live cart total is ₹329");
+    expect(result.text).toContain("shown to the user was ₹204");
+    expect(result.text).toContain("ORDERON is no longer applied");
+    expect(place).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Food placement when no cart summary has been shown since the last one", async () => {
+    const place = vi.fn();
+    const session = fakeSession({ get_food_cart: () => liveCart(329), place_food_order: place });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "place_food_order",
+      {
+        addressId: PG,
+        paymentMethod: "Cash",
+      },
+      { userText: "yes", facts: factsWith() },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("no cart summary has been shown");
+    expect(place).not.toHaveBeenCalled();
+  });
+
+  it("places when the totals agree, tolerating rounding", async () => {
+    const place = vi.fn(() => text("🎉 Swiggy order placed successfully! Order ID: 1"));
+    const session = fakeSession({ get_food_cart: () => liveCart(204), place_food_order: place });
+    const facts = factsWith({ coupon: "ORDERON" });
+    facts.quotedTotal.food = 204.4;
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "place_food_order",
+      {
+        addressId: PG,
+        paymentMethod: "Cash",
+      },
+      { userText: "yes", facts },
+    );
+    expect(result.isError).toBe(false);
+    expect(place).toHaveBeenCalledTimes(1);
+    // The order consumed the cart: the next placement needs a fresh read.
+    expect(facts.quotedTotal.food).toBeNull();
+    expect(facts.coupon).toBeNull();
+  });
+
+  it("does not demand a quote for Instamart, whose cart text it cannot read", async () => {
+    const checkout = vi.fn(() => ok({ orderId: "1", status: "CONFIRMED" }));
+    const session = fakeSession(
+      { get_cart: () => ok({ cart: { to_pay: 250 } }), checkout },
+      {},
+      () => "instamart",
+    );
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "checkout",
+      {
+        addressId: PG,
+        paymentMethod: "Cash",
+      },
+      { userText: "yes", facts: factsWith() },
+    );
+    expect(result.isError).toBe(false);
+    expect(checkout).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays out of the way entirely when the caller supplies no facts", async () => {
+    const place = vi.fn(() => text("placed"));
+    const session = fakeSession({ get_food_cart: () => liveCart(329), place_food_order: place });
+    const result = await executeGuardedTool(
+      session,
+      nextUserId++,
+      "place_food_order",
+      {
+        addressId: PG,
+      },
+      CONFIRMED,
+    );
+    expect(result.isError).toBe(false);
+  });
+});

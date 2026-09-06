@@ -8,6 +8,7 @@ import { beginAuth, getValidToken, invalidateToken } from "./swiggy-auth";
 import { SwiggyAuthError, messageOf } from "./mcp/errors";
 import { getMcpSession, evictMcpSession, type SwiggyMcpSession } from "./mcp/session";
 import { executeGuardedTool, tryParseJson } from "./mcp/guardrails";
+import { buildFacts } from "./mcp/facts";
 
 type User = typeof schema.users.$inferSelect;
 
@@ -15,6 +16,12 @@ const MAX_ITERATIONS = 12;
 /** Identical repeats of one tool call within a turn before it is refused. */
 const MAX_IDENTICAL_CALLS = 2;
 const HISTORY_LIMIT = 40;
+/**
+ * Rows replayed for the conversation facts (address ids, cart, coupon, quoted
+ * total). Wider than the model's window: the get_addresses that named the
+ * address is often a day older than the order it protects.
+ */
+const FACTS_HISTORY_LIMIT = 300;
 /** Menus can be enormous; cap what one tool result adds to context. */
 const TOOL_RESULT_MAX_CHARS = 12_000;
 /** Longer than the webhook's maxDuration, so a killed instance still frees it. */
@@ -36,13 +43,13 @@ export async function ensureUser(
   return user;
 }
 
-async function loadHistory(userId: number): Promise<ChatMessage[]> {
+async function loadHistory(userId: number, limit = HISTORY_LIMIT): Promise<ChatMessage[]> {
   const rows = await db
     .select()
     .from(schema.messages)
     .where(eq(schema.messages.userId, userId))
     .orderBy(desc(schema.messages.createdAt), desc(schema.messages.id))
-    .limit(HISTORY_LIMIT);
+    .limit(limit);
   return sanitizeHistory(rows.reverse().map((r) => r.content as ChatMessage));
 }
 
@@ -102,7 +109,7 @@ export interface AgentDeps {
   evictSession(token: string): void;
   getValidToken(userId: number): Promise<string | null>;
   invalidateToken(userId: number): Promise<void>;
-  loadHistory(userId: number): Promise<ChatMessage[]>;
+  loadHistory(userId: number, limit?: number): Promise<ChatMessage[]>;
   persist(userId: number, message: ChatMessage): Promise<void>;
   authLink(user: User): Promise<string>;
   acquireTurnLock(userId: number): Promise<boolean>;
@@ -220,7 +227,11 @@ async function runLockedTurn(
 
   const model = d.getModel();
   const system = buildSystemPrompt(user, surface);
-  const messages = await d.loadHistory(user.id);
+  // One read serves both: the facts replay the long tail, the model sees the
+  // recent window. Re-sanitised because a cut can land mid tool round.
+  const recent = await d.loadHistory(user.id, FACTS_HISTORY_LIMIT);
+  const facts = buildFacts(recent);
+  const messages = sanitizeHistory(recent.slice(-HISTORY_LIMIT));
 
   const repeats = new Map<string, number>();
   // Survives the whole turn: the repeat-breaker only catches identical
@@ -276,6 +287,7 @@ async function runLockedTurn(
           userText: text,
           completed,
           confirmedOrders,
+          facts,
         });
         results.push({
           toolCallId: call.id,

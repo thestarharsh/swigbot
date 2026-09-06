@@ -1,5 +1,14 @@
 import { sql } from "drizzle-orm";
 import { db, schema } from "../db";
+import {
+  cartItemsOf,
+  menuItemIdOf,
+  observeToolResult,
+  parseCartText,
+  quantityOf,
+  totalFromText,
+  type ConversationFacts,
+} from "./facts";
 import { withRetry, sleep } from "./retry";
 import { isRetryableError, messageOf } from "./errors";
 import type { ServerKey, SwiggyMcpSession, ToolCallOutcome } from "./session";
@@ -83,6 +92,12 @@ export interface TurnContext {
    * iteration and tempts the model to announce an outcome twice.
    */
   confirmedOrders?: Set<string>;
+  /**
+   * What the conversation has established (address ids, menu vs add-on ids,
+   * the last cart, coupon and quoted total). Guards that need it stay quiet
+   * when it is absent; the agent always supplies it.
+   */
+  facts?: ConversationFacts;
 }
 
 export async function executeGuardedTool(
@@ -94,9 +109,12 @@ export async function executeGuardedTool(
 ): Promise<ToolCallOutcome> {
   const started = Date.now();
   let outcome: ToolCallOutcome;
+  // The merge below may add items to a cart update; the facts must remember
+  // what was actually sent, not what the model asked for.
+  const sent = { args };
 
   try {
-    outcome = await runGuarded(session, userId, name, args, turn);
+    outcome = await runGuarded(session, userId, name, args, turn, sent);
   } catch (err) {
     await log(session, userId, name, "error", Date.now() - started, messageOf(err));
     throw err;
@@ -110,6 +128,7 @@ export async function executeGuardedTool(
     Date.now() - started,
     outcome.isError ? outcome.text.slice(0, 500) : null,
   );
+  if (turn?.facts) observeToolResult(turn.facts, name, sent.args, outcome.text, outcome.isError);
   return outcome;
 }
 
@@ -123,6 +142,7 @@ async function runGuarded(
   name: string,
   args: Record<string, unknown>,
   turn: TurnContext | undefined,
+  sent: { args: Record<string, unknown> } = { args },
 ): Promise<ToolCallOutcome> {
   const tool = session.tools.find((t) => t.name === name);
   if (!tool) {
@@ -140,6 +160,22 @@ async function runGuarded(
         `with the appropriate tool (addresses via get_addresses, Dineout locations via ` +
         `get_saved_locations) and call again. Never invent an ID.`,
     );
+  }
+
+  const facts = turn?.facts;
+
+  const addressViolation = facts ? addressIdPrecheck(args, facts) : null;
+  if (addressViolation) return blocked(addressViolation);
+
+  // Items the merge kept in the cart on the model's behalf; noted in the result.
+  let carried: string[] = [];
+  if (name === "update_food_cart" && facts) {
+    const addonViolation = addonIdPrecheck(args, facts);
+    if (addonViolation) return blocked(addonViolation);
+    const merged = mergeCartItems(args, facts);
+    args = merged.args;
+    carried = merged.carried;
+    sent.args = args;
   }
 
   // report_error exists on all three servers, so an omitted domain would be
@@ -213,12 +249,19 @@ async function runGuarded(
   }
 
   if (name === "place_food_order" || name === "checkout") {
-    const violation = await placementPrecheck(session, name, args);
+    const violation = await placementPrecheck(session, name, args, facts);
     if (violation) return blocked(violation);
   }
 
   if (!IRREVERSIBLE.has(name)) {
-    const outcome = postProcess(name, await withRetry(() => session.callTool(name, args)));
+    let outcome = postProcess(name, await withRetry(() => session.callTool(name, args)));
+    if (name === "update_food_cart") outcome = emptyAfterUpdate(args, outcome, facts) ?? outcome;
+    if (name === "update_food_cart" && !outcome.isError && carried.length) {
+      outcome = { ...outcome, text: `${outcome.text}\n\n${carriedNote(carried)}` };
+    }
+    if (facts && (name === "get_food_cart" || name === "update_food_cart")) {
+      outcome = await reapplyCoupon(session, args, outcome, facts);
+    }
     // Started only by a call that actually returned a status: a failed track
     // told the user nothing, so it must not cost them the next 10 seconds.
     if (RATE_LIMITED_READS.has(name) && !outcome.isError) {
@@ -414,15 +457,20 @@ async function placementPrecheck(
   session: SwiggyMcpSession,
   placementTool: string,
   args: Record<string, unknown>,
+  facts: ConversationFacts | undefined,
 ): Promise<string | null> {
-  const cartTool = placementTool === "place_food_order" ? "get_food_cart" : "get_cart";
+  const isFood = placementTool === "place_food_order";
+  const cartTool = isFood ? "get_food_cart" : "get_cart";
   try {
     const cart = await withRetry(() => session.callTool(cartTool, cartArgs(cartTool, args)), {
       maxAttempts: 2,
     });
     if (cart.isError) return null;
-    const total = extractCartTotal(tryParseJson(cart.text));
+    const total = extractCartTotal(tryParseJson(cart.text)) ?? totalFromText(cart.text);
     if (total == null) return null;
+
+    const lock = facts ? priceLock(isFood, total, cart.text, facts) : null;
+    if (lock) return lock;
 
     if (placementTool === "place_food_order" && total > FOOD_CART_CAP_RUPEES) {
       return `BLOCKED: the food cart total is ₹${total}, over the ₹${FOOD_CART_CAP_RUPEES} order limit. Ask the user to remove an item to bring the total under ₹${FOOD_CART_CAP_RUPEES}, then try again.`;
@@ -435,6 +483,238 @@ async function placementPrecheck(
     // A failed pre-check must never block ordering.
     return null;
   }
+}
+
+/**
+ * The user consents to a number. If the live cart no longer matches the last
+ * total the model was shown - a coupon fell off after a cart edit, a failed
+ * UPI attempt consumed it, a price changed - the placement must go back to
+ * the user. A Food cart nobody has read since the last placement is refused
+ * outright, because the only summary the user could have seen is stale.
+ */
+function priceLock(
+  isFood: boolean,
+  liveTotal: number,
+  liveCartText: string,
+  facts: ConversationFacts,
+): string | null {
+  const quoted = isFood ? facts.quotedTotal.food : facts.quotedTotal.instamart;
+  const readTool = isFood ? "get_food_cart" : "get_cart";
+
+  if (quoted == null) {
+    if (!isFood) return null;
+    return (
+      `BLOCKED - no cart summary has been shown to the user for the current cart: the last ` +
+      `one was consumed by an earlier placement or the cart has not been read this session. ` +
+      `Call ${readTool}, show the user the items, the total (₹${liveTotal} right now) and ` +
+      `whether a coupon is applied, get their "yes", and only then place.`
+    );
+  }
+
+  if (Math.round(liveTotal) === Math.round(quoted)) return null;
+
+  const liveCoupon = isFood ? (parseCartText(liveCartText)?.coupon ?? null) : null;
+  const couponNote =
+    isFood && facts.coupon && liveCoupon !== facts.coupon
+      ? ` The coupon ${facts.coupon} is no longer applied to this cart, which is the likely cause.`
+      : "";
+  return (
+    `BLOCKED - the live cart total is ₹${liveTotal} but the last total shown to the user was ` +
+    `₹${quoted}.${couponNote} The user has not agreed to pay ₹${liveTotal}. Call ${readTool}, ` +
+    `show them the updated summary and say plainly what changed, and get a fresh "yes" ` +
+    `before placing.`
+  );
+}
+
+/**
+ * An addressId the model typed rather than copied. One changed character
+ * still looks like an id, Swiggy sometimes accepts it, and a placement sent
+ * with it either fails or goes to the wrong door.
+ */
+function addressIdPrecheck(args: Record<string, unknown>, facts: ConversationFacts): string | null {
+  const raw = args.addressId ?? args.selectedAddressId;
+  if (typeof raw !== "string" || !raw || !facts.addressIds.size || facts.addressIds.has(raw)) {
+    return null;
+  }
+  const known = [...facts.addressIds];
+  const meant = known.find((id) => id.length === raw.length && hammingDistance(id, raw) <= 3);
+  return (
+    `Call rejected before it was sent: addressId "${raw}" is not one of the user's saved ` +
+    `addresses. Swiggy returned exactly: ${known.join(", ")}.` +
+    (meant ? ` You probably meant ${meant}.` : "") +
+    ` Copy the id byte-for-byte; if the list may have changed, call get_addresses again.`
+  );
+}
+
+function hammingDistance(a: string, b: string): number {
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
+/**
+ * search_menu prints a dish's id as "(ID: n)" and its add-ons as
+ * "choice:n". Sent as menu_item_id, a choice id makes Swiggy answer "Cart
+ * updated. Cart is empty." - the item the user asked for never lands. Seen
+ * live twice in one order: the model reached for the add-on that matched the
+ * dish name when the search had not returned the dish itself.
+ */
+function addonIdPrecheck(args: Record<string, unknown>, facts: ConversationFacts): string | null {
+  const bad = cartItemsOf(args)
+    .map(menuItemIdOf)
+    .filter(
+      (id): id is string => !!id && facts.addonChoiceIds.has(id) && !facts.menuItemIds.has(id),
+    );
+  if (!bad.length) return null;
+  const plural = bad.length > 1;
+  return (
+    `Call rejected before it was sent: ${bad.join(", ")} ${plural ? "are" : "is an"} add-on ` +
+    `choice id${plural ? "s" : ""} ("choice:…" in search_menu), not ${plural ? "" : "a "}menu ` +
+    `item${plural ? "s" : ""}. Only the "(ID: …)" printed after a dish's price is a menu_item_id; ` +
+    `an add-on belongs inside that dish's "addons" with its group id. If the dish the user asked ` +
+    `for was not in the search results, do not substitute an add-on: call ` +
+    `get_restaurant_menu(restaurantId, addressId) to find its exact name, search_menu with that ` +
+    `name, and only then add it. If it is not on the menu at all, say so.`
+  );
+}
+
+/**
+ * update_food_cart replaces the whole cart, so "one more pav" sent alone
+ * removes everything else (seen live: the pav bhaji vanished, delivery went
+ * from free to ₹74 and the coupon fell off). Items in the last known cart
+ * that the call does not mention are carried over as the model last sent
+ * them - customisations included - and quantity 0 is how an item is removed.
+ * Another restaurant's cart is not merged: that switch flushes by design.
+ */
+function mergeCartItems(
+  args: Record<string, unknown>,
+  facts: ConversationFacts,
+): { args: Record<string, unknown>; carried: string[] } {
+  const items = cartItemsOf(args);
+  const kept = items.filter((item) => quantityOf(item) > 0);
+  const carried: string[] = [];
+  const cart = facts.cart;
+  const restaurantId = args.restaurantId == null ? "" : String(args.restaurantId);
+  const sameRestaurant =
+    cart &&
+    (cart.restaurantId
+      ? cart.restaurantId === restaurantId
+      : !!cart.restaurantName && cart.restaurantName === args.restaurantName);
+
+  if (cart && sameRestaurant) {
+    const mentioned = new Set(items.map(menuItemIdOf));
+    for (const item of cart.items) {
+      if (mentioned.has(item.id)) continue;
+      kept.push(
+        facts.cartPayloads.get(item.id) ?? { menu_item_id: item.id, quantity: item.quantity },
+      );
+      carried.push(`${item.name} x${item.quantity}`);
+    }
+  }
+  if (kept.length === items.length && !carried.length) return { args, carried };
+  return { args: { ...args, cartItems: kept }, carried };
+}
+
+function carriedNote(carried: string[]): string {
+  return (
+    `NOTE: ${carried.join(", ")} ${carried.length > 1 ? "were" : "was"} kept in the cart ` +
+    `automatically - update_food_cart replaces the whole cart, so every item must be sent each ` +
+    `time. To remove an item, send it with quantity 0.`
+  );
+}
+
+/**
+ * "Cart updated." followed by "Cart is empty." is Swiggy's way of saying the
+ * ids were not items of this restaurant. Left as a success, the model tells
+ * the user the item was added and then wonders why the cart is empty.
+ */
+function emptyAfterUpdate(
+  args: Record<string, unknown>,
+  outcome: ToolCallOutcome,
+  facts: ConversationFacts | undefined,
+): ToolCallOutcome | null {
+  if (outcome.isError || !/^\s*Cart is empty\.?\s*$/m.test(outcome.text)) return null;
+  const wanted = cartItemsOf(args).filter((item) => quantityOf(item) > 0);
+  if (!wanted.length) return null;
+  if (facts) {
+    facts.cart = null;
+    facts.cartPayloads.clear();
+  }
+  const ids = wanted.map((item) => menuItemIdOf(item) ?? "?").join(", ");
+  return blocked(
+    `Nothing was added - the cart is still empty after this update. Swiggy did not accept ` +
+      `${ids} as menu item${wanted.length > 1 ? "s" : ""} of restaurant ${String(args.restaurantId)}. ` +
+      `Usually the id was an add-on choice ("choice:…") or a variant rather than a dish; a ` +
+      `dish's menu_item_id is the "(ID: …)" after its price in search_menu. Find the dish again ` +
+      `(search_menu with its exact name, or get_restaurant_menu to browse), use that id, and ` +
+      `tell the user the item has not been added yet.`,
+  );
+}
+
+/**
+ * A cart edit or a consumed order drops the coupon the user asked for, and
+ * Swiggy says nothing - the total just goes up. Re-applied here so the model
+ * quotes the right number; when Swiggy refuses, the result says so in words
+ * the model cannot mistake for a discount.
+ */
+async function reapplyCoupon(
+  session: SwiggyMcpSession,
+  args: Record<string, unknown>,
+  outcome: ToolCallOutcome,
+  facts: ConversationFacts,
+): Promise<ToolCallOutcome> {
+  const code = facts.coupon;
+  if (!code || outcome.isError) return outcome;
+  const cart = parseCartText(outcome.text, args);
+  if (!cart || cart.coupon) return outcome;
+  const addressId = args.addressId;
+  if (typeof addressId !== "string" || !session.tools.some((t) => t.name === "apply_food_coupon")) {
+    return outcome;
+  }
+
+  let result: ToolCallOutcome;
+  try {
+    result = await session.callTool("apply_food_coupon", { addressId, couponCode: code });
+  } catch (err) {
+    result = { text: messageOf(err), isError: true };
+  }
+  const discount = /^\s*Discount:\s*-₹\s*([\d,]+(?:\.\d+)?)/im.exec(result.text);
+  const newTotal = /^\s*New total:\s*₹\s*([\d,]+(?:\.\d+)?)/im.exec(result.text);
+  const applied =
+    !result.isError &&
+    /applied successfully/i.test(result.text) &&
+    (!discount || Number(discount[1].replace(/,/g, "")) > 0);
+
+  if (applied && discount && newTotal) {
+    const text = outcome.text.replace(
+      /^(\s*)TO PAY:.*$/m,
+      `$1Coupon (${code}): -₹${discount[1]}\n$1TO PAY: ₹${newTotal[1]}`,
+    );
+    return {
+      ...outcome,
+      text:
+        `${text}\n\nNOTE: coupon ${code} had dropped off after the cart change and was ` +
+        `re-applied automatically; the TO PAY above already includes it.`,
+    };
+  }
+  if (applied) {
+    return {
+      ...outcome,
+      text: `${outcome.text}\n\nCoupon ${code} was re-applied:\n${result.text}`,
+    };
+  }
+
+  // Spent or invalid now: stop trying, and make the model say so.
+  facts.coupon = null;
+  const total = cart.toPay == null ? "the TO PAY above" : `₹${cart.toPay}`;
+  return {
+    ...outcome,
+    text:
+      `${outcome.text}\n\nNOTE: coupon ${code} was applied earlier but is NOT on this cart any ` +
+      `more, and re-applying it failed: ${result.text.slice(0, 300).trim()} Tell the user ` +
+      `plainly that the coupon no longer applies and that the total is ${total}. Do not claim ` +
+      `any discount.`,
+  };
 }
 
 /** Cart-shaped responses that can carry a coupon Swiggy has not really applied. */
